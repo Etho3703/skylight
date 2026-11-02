@@ -507,7 +507,11 @@ export class Renderer {
     this.updateSky(cfg, now);
     this.drawSky(cfg, proj);
     this.drawOverlays(cfg, proj);
-    if (cfg.showAirport) this.drawAirport(cfg, proj);
+    if (cfg.showAirport && !cfg.planetariumMode) this.drawAirport(cfg, proj);
+
+    // Planes go the moment planetarium mode is switched on, instead of
+    // fading out over staleSec.
+    if (cfg.planetariumMode) this.tracks.clear();
 
     const tt = now - RENDER_DELAY_MS;
     const visible: Visible[] = [];
@@ -653,7 +657,9 @@ export class Renderer {
     const hM = this.horizonM(cfg);
     const skyMode = cfg.projectionMode === "sky";
 
-    if (cfg.rangeRings) {
+    // Planetarium mode is the sky alone: no range rings (the compass stays,
+    // for orientation).
+    if (cfg.rangeRings && !cfg.planetariumMode) {
       ctx.save();
       if (skyMode) {
         // Elevation contours on the look-up dome (15° … 75° above horizon).
