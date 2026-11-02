@@ -13,6 +13,8 @@ export interface Star {
 export interface Constellation {
   id: string;
   name: string;
+  /** IAU figure this asterism duplicates; skipped while the full figures draw. */
+  iau?: string;
   segments: [string, string][];
 }
 
@@ -69,6 +71,7 @@ export const CONSTELLATIONS: Constellation[] = [
   {
     id: "orion",
     name: "Orion",
+    iau: "Ori",
     segments: [
       // Shoulders, two diagonals down to the belt, the belt itself, two
       // diagonals down to the feet, and the feet, forming the classic hourglass.
@@ -80,6 +83,7 @@ export const CONSTELLATIONS: Constellation[] = [
   {
     id: "ursa_major",
     name: "Big Dipper",
+    iau: "UMa",
     segments: [
       ["dubhe", "merak"], ["merak", "phecda"], ["phecda", "megrez"],
       ["megrez", "dubhe"], ["megrez", "alioth"], ["alioth", "mizar"],
@@ -89,6 +93,7 @@ export const CONSTELLATIONS: Constellation[] = [
   {
     id: "cassiopeia",
     name: "Cassiopeia",
+    iau: "Cas",
     segments: [
       ["segin", "ruchbah"], ["ruchbah", "navi"], ["navi", "schedar"],
       ["schedar", "caph"],
@@ -111,9 +116,14 @@ export function constellationVisible(constellations: Record<string, boolean>, id
   return constellations[id] !== false;
 }
 
-/** Flattened asterism segments for the currently-visible constellations. */
-export function visibleAsterisms(constellations: Record<string, boolean>): [string, string][] {
+/** Flattened asterism segments for the currently-visible constellations.
+ *  With `figures` on, asterisms the IAU figures already draw are left out. */
+export function visibleAsterisms(
+  constellations: Record<string, boolean>,
+  figures = false,
+): [string, string][] {
   return CONSTELLATIONS.filter((c) => constellationVisible(constellations, c.id))
+    .filter((c) => !(figures && c.iau))
     .flatMap((c) => c.segments);
 }
 

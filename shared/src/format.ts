@@ -2,7 +2,7 @@
 
 import type { SpeedUnit, AltitudeUnit, DistanceUnit } from "./config.js";
 
-import { FT_TO_M, KT_TO_MPH, KT_TO_KMH, MI_TO_KM } from "./constants.js";
+import { FT_TO_M, KT_TO_MPH, KT_TO_KMH, MI_TO_KM, NM_PER_MILE } from "./constants.js";
 
 const SPEED_SUFFIX: Record<SpeedUnit, string> = {
   kt: "kt",
@@ -16,6 +16,7 @@ const ALTITUDE_SUFFIX: Record<AltitudeUnit, string> = {
 const DISTANCE_SUFFIX: Record<DistanceUnit, string> = {
   mi: "mi",
   km: "km",
+  nm: "nm",
 };
 
 /** Instantiate cached Intl.NumberFormat format function (using the current browser locale) */
@@ -63,6 +64,8 @@ export function convertDistance(distanceMi: number, unit: DistanceUnit): number 
   switch (unit) {
     case "km":
       return distanceMi * MI_TO_KM;
+    case "nm":
+      return distanceMi * NM_PER_MILE;
     default:
       return distanceMi;
   }
@@ -73,6 +76,8 @@ export function convertDistanceToMi(value: number, unit: DistanceUnit): number {
   switch (unit) {
     case "km":
       return value / MI_TO_KM;
+    case "nm":
+      return value / NM_PER_MILE;
     default:
       return value;
   }

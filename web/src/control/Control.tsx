@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Airport, Config, ShowFields, LocationProfile } from "@shared/index.js";
-import { convertAltitude, convertAltitudeToFt, convertDistance, convertDistanceToMi, round } from "@shared/index.js";
+import { convertAltitude, convertAltitudeToFt, convertDistance, convertDistanceToMi, round, MAX_RADIUS_MI, SATELLITE_GROUPS } from "@shared/index.js";
+import type { PlanetariumAuto } from "@shared/index.js";
 import { formatLatLon } from "@shared/format.js";
 import { CONSTELLATIONS } from "@shared/stars.js";
 import { geoAvailability, geoErrorMessage } from "../lib/geolocation.js";
@@ -371,6 +372,7 @@ export function Control() {
               options={[
                 { value: "mi", label: "mi" },
                 { value: "km", label: "km" },
+                { value: "nm", label: "nm" },
               ]}
               onChange={(v) => set({ distanceUnit: v })} />
           </Row>
@@ -393,11 +395,11 @@ export function Control() {
           </Row>
           <Row label="Radius" hint="wide ranges suit map projection best">
             <Slider id="radiusMiles" value={convertDistance(cfg.radiusMiles, cfg.distanceUnit)}
-              min={convertDistance(0.5, cfg.distanceUnit)}
-              max={convertDistance(100, cfg.distanceUnit)}
-              step={convertDistance(0.5, cfg.distanceUnit)}
+              min={0.5}
+              max={round(convertDistance(MAX_RADIUS_MI, cfg.distanceUnit))}
+              step={0.5}
               unit={cfg.distanceUnit}
-              onChange={(v) => set({ radiusMiles: round(convertDistanceToMi(v, cfg.distanceUnit), 1) })} />
+              onChange={(v) => set({ radiusMiles: round(convertDistanceToMi(v, cfg.distanceUnit), 3) })} />
           </Row>
           <Row label="Projection" hint="sky = realistic look-up motion">
             <Segmented
@@ -574,6 +576,17 @@ export function Control() {
           <Row label="Planetarium mode" hint="Only show stars etc. - no planes">
             <Toggle value={cfg.planetariumMode} onChange={(v) => set({ planetariumMode: v })} />
           </Row>
+          {!cfg.planetariumMode && (
+            <Row label="Full stars when empty" indent={true}
+              hint={cfg.planetariumAuto === "quiet" ? "planetarium star field while no planes are overhead" : undefined}>
+              <Segmented<PlanetariumAuto> value={cfg.planetariumAuto}
+                options={[
+                  { value: "off", label: "Off" },
+                  { value: "quiet", label: "On" },
+                ]}
+                onChange={(v) => set({ planetariumAuto: v })} />
+            </Row>
+          )}
 
           <Row label="Stars">
             <Toggle value={cfg.showStars} onChange={(v) => set({ showStars: v })} />
@@ -581,14 +594,30 @@ export function Control() {
           {cfg.showStars && (
             <>
               <Row label="Star density" indent={true}>
-                <Slider id="starMagLimit" value={cfg.starMagLimit} min={1} max={4} step={0.1}
+                <Slider id="starMagLimit" value={cfg.starMagLimit} min={1} max={6} step={0.1}
                   onChange={(v) => set({ starMagLimit: v })} />
+              </Row>
+              <Row label="Planetarium star density" hint="6 = everything the eye can see" indent={true}>
+                <Slider id="planetariumStarMagLimit" value={cfg.planetariumStarMagLimit} min={2} max={6} step={0.1}
+                  onChange={(v) => set({ planetariumStarMagLimit: v })} />
               </Row>
               <Row label="Star labels" hint="higher = more names" indent={true}>
                 <Slider id="starLabelMagLimit" value={cfg.starLabelMagLimit} min={0} max={3} step={0.1}
                   onChange={(v) => set({ starLabelMagLimit: v })} />
               </Row>
-              {CONSTELLATIONS.map((c) => (
+              <Row label="Constellation lines" hint="all 88" indent={true}>
+                <Toggle value={cfg.showConstellationLines} onChange={(v) => set({ showConstellationLines: v })} />
+              </Row>
+              <Row label="Constellation names" indent={true}>
+                <Toggle value={cfg.showConstellationNames} onChange={(v) => set({ showConstellationNames: v })} />
+              </Row>
+              {cfg.showConstellationNames && (
+                <Row label="Names shown" hint="1 = famous only, 3 = all" indent={true}>
+                  <Slider id="constellationNameRank" value={cfg.constellationNameRank} min={1} max={3} step={1}
+                    onChange={(v) => set({ constellationNameRank: v })} />
+                </Row>
+              )}
+              {CONSTELLATIONS.filter((c) => !(cfg.showConstellationLines && c.iau)).map((c) => (
                 <Row key={c.id} label={c.name} indent={true}>
                   <Toggle value={cfg.constellations[c.id] !== false}
                     onChange={(v) => set({ constellations: { ...cfg.constellations, [c.id]: v } })} />
@@ -606,9 +635,24 @@ export function Control() {
             <Toggle value={cfg.showSatellites} onChange={(v) => set({ showSatellites: v })} />
           </Row>
           {cfg.showSatellites && (
-            <Row label="Satellite labels" hint="name every satellite">
-              <Toggle value={cfg.satelliteLabels} onChange={(v) => set({ satelliteLabels: v })} />
-            </Row>
+            <>
+              <Row label="Satellite labels" hint="name every satellite" indent={true}>
+                <Toggle value={cfg.satelliteLabels} onChange={(v) => set({ satelliteLabels: v })} />
+              </Row>
+              <Row label="Only sunlit" hint="hide ones in Earth's shadow" indent={true}>
+                <Toggle value={cfg.satellitesSunlitOnly} onChange={(v) => set({ satellitesSunlitOnly: v })} />
+              </Row>
+              {SATELLITE_GROUPS.map((g) => (
+                <Row key={g.id} label={g.name} hint={g.hint} indent={true}>
+                  <Toggle value={cfg.satelliteGroups.includes(g.id)}
+                    onChange={(v) => set({
+                      satelliteGroups: v
+                        ? [...cfg.satelliteGroups, g.id]
+                        : cfg.satelliteGroups.filter((id) => id !== g.id),
+                    })} />
+                </Row>
+              ))}
+            </>
           )}
           <Row label="Planets" hint="Venus, Jupiter, Mars…">
             <Toggle value={cfg.showPlanets} onChange={(v) => set({ showPlanets: v })} />

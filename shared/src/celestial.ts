@@ -7,6 +7,7 @@ import * as AstronomyNS from "astronomy-engine";
 import * as satelliteNS from "satellite.js";
 import { DEG } from "./constants.js";
 import { STARS } from "./stars.js";
+import { STARFIELD, CONSTELLATION_FIGURES } from "./skyCatalog.js";
 
 // Both packages ship UMD/CJS bundles. Under some Node versions the ESM
 // namespace only exposes `default` (the module lexer can't parse the UMD
@@ -31,6 +32,17 @@ export interface SkyBody {
   illum?: number; // moon lit fraction 0..1
   waning?: boolean;
   altitudeKm?: number;
+  /** Satellites: false while in Earth's shadow. */
+  sunlit?: boolean;
+}
+
+/** A constellation figure reduced to horizontal coords. */
+export interface SkyFigure {
+  id: string;
+  name: string;
+  rank: number;
+  label?: { az: number; alt: number };
+  lines: { az: number; alt: number }[][];
 }
 
 export interface Tle {
@@ -45,6 +57,7 @@ export interface Sky {
   stars: SkyBody[];
   sats: SkyBody[];
   planets: SkyBody[];
+  figures: SkyFigure[];
 }
 
 export interface SkyOpts {
@@ -55,7 +68,43 @@ export interface SkyOpts {
   planets: boolean;
   magLimit: number;
   tles: Tle[];
+  /** Compute the 88 IAU constellation figures. */
+  figures?: boolean;
+  /** Drop satellites in Earth's shadow (the ISS is kept, flagged unlit). */
+  sunlitOnly?: boolean;
 }
+
+const EARTH_RADIUS_KM = 6371;
+
+/** True while a satellite (ECI km) is lit, with a cylindrical Earth shadow.
+ *  `sun` is a unit vector toward the Sun in the same (equatorial) frame. */
+export function satSunlit(pos: { x: number; y: number; z: number }, sun: { x: number; y: number; z: number }): boolean {
+  const along = pos.x * sun.x + pos.y * sun.y + pos.z * sun.z;
+  if (along >= 0) return true; // on the day side of the terminator plane
+  const px = pos.x - along * sun.x;
+  const py = pos.y - along * sun.y;
+  const pz = pos.z - along * sun.z;
+  return px * px + py * py + pz * pz > EARTH_RADIUS_KM * EARTH_RADIUS_KM;
+}
+
+/** STARFIELD indices that are one of the named STARS, so they aren't drawn twice. */
+const NAMED_DUPES: Set<number> = (() => {
+  const out = new Set<number>();
+  for (let i = 0; i < STARFIELD.length; i += 3) {
+    const ra = STARFIELD[i];
+    const dec = STARFIELD[i + 1];
+    const mag = STARFIELD[i + 2];
+    if (mag > 4) break; // brightest first; the named stars are all brighter
+    for (const s of STARS) {
+      const dRa = Math.abs(((s.ra - ra + 540) % 360) - 180) * Math.cos(dec * DEG);
+      if (Math.abs(s.dec - dec) < 0.2 && dRa < 0.2 && Math.abs(s.mag - mag) < 0.6) {
+        out.add(i);
+        break;
+      }
+    }
+  }
+  return out;
+})();
 
 /** Naked-eye planets, in rough order of how often they're a standout. */
 const PLANETS: { body: AstronomyNS.Body; name: string }[] = [
@@ -111,7 +160,8 @@ function getSatrec(tle: Tle): satelliteNS.SatRec | null {
 
 export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpts): Sky {
   const observer = new Astronomy.Observer(latDeg, lonDeg, 0);
-  const sky: Sky = { stars: [], sats: [], planets: [] };
+  const sky: Sky = { stars: [], sats: [], planets: [], figures: [] };
+  const lst = Astronomy.SiderealTime(date) + lonDeg / 15; // local sidereal hours
 
   if (o.sun) {
     const { az, alt } = bodyAltAz(Astronomy.Body.Sun, date, observer);
@@ -124,12 +174,32 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
     sky.moon = { kind: "moon", az, alt, illum: illum.phase_fraction, waning: phase > 180 };
   }
   if (o.stars) {
-    const lst = Astronomy.SiderealTime(date) + lonDeg / 15; // local sidereal hours
     for (const s of STARS) {
       if (s.mag > o.magLimit) continue;
       const { az, alt } = starAltAz(s.ra, s.dec, lst, latDeg);
       if (alt < -2) continue; // below horizon
       sky.stars.push({ kind: "star", id: s.id, name: s.name, az, alt, mag: s.mag });
+    }
+    // The unnamed naked-eye field, brightest first.
+    for (let i = 0; i < STARFIELD.length; i += 3) {
+      const mag = STARFIELD[i + 2];
+      if (mag > o.magLimit) break;
+      if (NAMED_DUPES.has(i)) continue;
+      const { az, alt } = starAltAz(STARFIELD[i], STARFIELD[i + 1], lst, latDeg);
+      if (alt < -2) continue;
+      sky.stars.push({ kind: "star", az, alt, mag });
+    }
+  }
+  if (o.figures) {
+    for (const f of CONSTELLATION_FIGURES) {
+      const lines = f.lines.map((line) => {
+        const pts: { az: number; alt: number }[] = [];
+        for (let i = 0; i < line.length; i += 2) pts.push(starAltAz(line[i], line[i + 1], lst, latDeg));
+        return pts;
+      });
+      if (!lines.some((l) => l.some((p) => p.alt > -2))) continue; // wholly below the horizon
+      const label = f.label ? starAltAz(f.label[0], f.label[1], lst, latDeg) : undefined;
+      sky.figures.push({ id: f.id, name: f.name, rank: f.rank, label, lines });
     }
   }
   if (o.satellites && o.tles.length) {
@@ -139,6 +209,11 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
       latitude: latDeg * DEG,
       height: 0,
     };
+    // Sun direction (equatorial, unit) for the Earth-shadow test. J2000 vs
+    // the TLEs' TEME frame differ by well under a degree - irrelevant here.
+    const sv = Astronomy.GeoVector(Astronomy.Body.Sun, date, true);
+    const sl = Math.hypot(sv.x, sv.y, sv.z);
+    const sun = { x: sv.x / sl, y: sv.y / sl, z: sv.z / sl };
     for (const tle of o.tles) {
       const rec = getSatrec(tle);
       if (!rec) continue;
@@ -152,6 +227,8 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
       const gd = satellite.eciToGeodetic(pos, gmst);
       const altitudeKm = gd.height; // km above WGS84 ellipsoid
       const isISS = /\bISS\b|\bZARYA\b/i.test(tle.name);
+      const sunlit = satSunlit(pos, sun);
+      if (o.sunlitOnly && !sunlit && !isISS) continue;
       const noradIdMatch = tle.line1.match(/^1\s+(\d+)/);
       sky.sats.push({
         kind: isISS ? "iss" : "satellite",
@@ -160,6 +237,7 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
         az: norm360(look.azimuth * R2D),
         alt,
         altitudeKm,
+        sunlit,
       });
     }
   }

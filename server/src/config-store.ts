@@ -3,7 +3,7 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { DEFAULT_CONFIG, mergeConfig, type Config } from "@shared/index.js";
+import { DEFAULT_CONFIG, isSatelliteGroup, mergeConfig, type Config } from "@shared/index.js";
 
 type Listener = (config: Config) => void;
 /** Config fields the control panel lets you point at an arbitrary host. */
@@ -39,6 +39,13 @@ function validateConfigWrite(config: Partial<Config>): void {
   for (const field of URL_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(config, field)) {
       validateUrlField(field, config[field]);
+    }
+  }
+  // Group ids end up in a CelesTrak URL, so only known ones are accepted.
+  if (Object.prototype.hasOwnProperty.call(config, "satelliteGroups")) {
+    const g = config.satelliteGroups;
+    if (!Array.isArray(g) || !g.every(isSatelliteGroup)) {
+      throw new ConfigValidationError("satelliteGroups must be a list of known CelesTrak groups");
     }
   }
 }

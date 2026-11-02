@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   );
   await enricher.load();
 
-  const tleStore = new TleStore(resolve(DATA_DIR, "tle-cache.json"));
+  const tleStore = new TleStore(resolve(DATA_DIR, "tle-cache.json"), () => store.get().satelliteGroups);
   await tleStore.load();
 
   const satCatStore = new SatCatStore(resolve(DATA_DIR, "satcat-cache.json"));

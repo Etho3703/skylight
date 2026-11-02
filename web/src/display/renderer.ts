@@ -41,6 +41,7 @@ import {
   FT_TO_M,
   KM_TO_M,
   MI_TO_M,
+  NM_TO_M,
   type Aircraft,
   type Config,
   type GroundSample,
@@ -74,6 +75,25 @@ function planetDrawSize(mag: number): number {
 function starDrawSize(mag: number): number {
   return Math.max(0.6, 2.6 - mag * 0.7);
 }
+
+/** Star opacity by magnitude: the bright ones as before, with a faint floor
+ *  that carries the naked-eye field down to mag 6. */
+function starAlpha(mag: number): number {
+  return Math.max(clamp01((2.8 - mag) / 3), 0.08 + 0.14 * clamp01((6 - mag) / 3.5));
+}
+
+/** Meters per display distance unit, for the range rings. */
+const UNIT_M: Record<Config["distanceUnit"], number> = { mi: MI_TO_M, km: KM_TO_M, nm: NM_TO_M };
+
+/** Range-ring spacing in display units: 1 at the default few-mile radius,
+ *  widening (2, 5, 10, 25, 50…) so a 100 nm view gets ~4 rings, not 100. */
+export function ringStep(radius: number): number {
+  for (const s of [1, 2, 5, 10, 25, 50, 100]) if (radius / s <= 5) return s;
+  return 250;
+}
+
+/** With planetariumAuto "quiet", how long the sky must be empty before it switches. */
+const QUIET_PLANETARIUM_MS = 30_000;
 
 /** Gap between sky-object edge and label anchor, px. */
 const SKY_LABEL_GAP = 4;
@@ -221,9 +241,13 @@ export class Renderer {
 
   // Sky layer state.
   private tles: Tle[] = [];
-  private sky: Sky = { stars: [], sats: [], planets: [] };
+  private sky: Sky = { stars: [], sats: [], planets: [], figures: [] };
   private skyComputedAt = 0;
   private skyOffsetUsed = NaN;
+  /** satelliteGroups the current TLEs were fetched for. */
+  private tleGroupsKey = "";
+  /** Last time any aircraft was on screen (rAF clock), for planetariumAuto "quiet". */
+  private lastTrafficAt = 0;
 
   /** When the source went down (rAF clock), null while healthy. While down,
    *  the staleness clock pauses so a transient fetch failure doesn't wipe the
@@ -326,6 +350,7 @@ export class Renderer {
   }
 
   private async fetchTles(): Promise<void> {
+    this.tleGroupsKey = this.getConfig().satelliteGroups.join(",");
     try {
       const res = await fetch("/api/tle");
       if (res.ok) this.tles = (await res.json()) as Tle[];
@@ -545,6 +570,8 @@ export class Renderer {
       visible.push({ tr, sample, sky, p, heading, rangeMi, alpha, color, emergency, sizeScale });
     }
 
+    if (visible.length) this.lastTrafficAt = now;
+
     // Nearest last so it paints on top.
     visible.sort((a, b) => b.rangeMi - a.rangeMi);
 
@@ -649,14 +676,24 @@ export class Renderer {
           ctx.fillText(`${elev}°`, cx + r + 4, cy);
         }
       } else {
-        for (let step = 1; step <= Math.floor(convertDistance(cfg.radiusMiles, cfg.distanceUnit)); step++) {
-          const r = step * (cfg.distanceUnit === "mi" ? MI_TO_M : KM_TO_M) * proj.pxPerM;
+        const radius = convertDistance(cfg.radiusMiles, cfg.distanceUnit);
+        const every = ringStep(radius);
+        ctx.font = `300 9px ${cfg.fonts.mono}`;
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        for (let d = every; d <= radius; d += every) {
+          const r = d * UNIT_M[cfg.distanceUnit] * proj.pxPerM;
           ctx.beginPath();
           ctx.arc(cx, cy, r, 0, Math.PI * 2);
           ctx.strokeStyle = rgba(hexToRgb(cfg.palette.grid), 0.5 * cfg.brightness);
           ctx.lineWidth = 1;
           ctx.setLineDash([2, 7]);
           ctx.stroke();
+          // Unit rings need no label; wider ones say how far they are.
+          if (every > 1) {
+            ctx.fillStyle = rgba(hexToRgb(cfg.palette.text), 0.22 * cfg.brightness);
+            ctx.fillText(`${d} ${cfg.distanceUnit}`, cx + r + 4, cy);
+          }
         }
         ctx.setLineDash([]);
       }
@@ -771,14 +808,23 @@ export class Renderer {
     return this.toPoint(sample, cfg, proj);
   }
 
+  /** Is the planetarium (rich star field, no planes) showing right now? */
+  private planetariumOn(cfg: Config, now: number): boolean {
+    if (cfg.planetariumMode) return true;
+    return cfg.planetariumAuto === "quiet" && now - this.lastTrafficAt > QUIET_PLANETARIUM_MS;
+  }
+
   // --- sky layer (sun / moon / stars / satellites) ---
   private updateSky(cfg: Config, now: number): void {
     const want =
       cfg.showStars || cfg.showSun || cfg.showMoon || cfg.showSatellites || cfg.showPlanets;
     if (!want) {
-      this.sky = { stars: [], sats: [], planets: [] };
+      this.sky = { stars: [], sats: [], planets: [], figures: [] };
       return;
     }
+    // New satellite groups picked in the control panel: the server fetches
+    // them on demand, so ask straight away rather than on the hourly timer.
+    if (cfg.satelliteGroups.join(",") !== this.tleGroupsKey) void this.fetchTles();
     if (now - this.skyComputedAt < 300 && this.skyOffsetUsed === cfg.skyTimeOffsetMin) return;
     this.skyComputedAt = now;
     this.skyOffsetUsed = cfg.skyTimeOffsetMin;
@@ -789,8 +835,12 @@ export class Renderer {
       stars: cfg.showStars,
       satellites: cfg.showSatellites,
       planets: cfg.showPlanets,
-      magLimit: cfg.starMagLimit,
+      magLimit: this.planetariumOn(cfg, now)
+        ? Math.max(cfg.starMagLimit, cfg.planetariumStarMagLimit)
+        : cfg.starMagLimit,
       tles: this.tles,
+      figures: cfg.showStars && (cfg.showConstellationLines || cfg.showConstellationNames),
+      sunlitOnly: cfg.satellitesSunlitOnly,
     });
   }
 
@@ -804,6 +854,38 @@ export class Renderer {
     const b = cfg.brightness;
     const skyLabels: SkyLabelEntry[] = [];
 
+    // IAU constellation figures (fainter still than the asterisms) + names.
+    if (cfg.showStars && this.sky.figures.length) {
+      if (cfg.showConstellationLines) {
+        ctx.save();
+        ctx.strokeStyle = `rgba(150,170,220,${0.1 * b})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const f of this.sky.figures) {
+          for (const line of f.lines) {
+            for (let i = 1; i < line.length; i++) {
+              const a = line[i - 1];
+              const c = line[i];
+              if (a.alt < -2 || c.alt < -2) continue;
+              const pa = this.projectSky(a.az, a.alt, cfg, proj);
+              const pc = this.projectSky(c.az, c.alt, cfg, proj);
+              ctx.moveTo(pa.x, pa.y);
+              ctx.lineTo(pc.x, pc.y);
+            }
+          }
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+      if (cfg.showConstellationNames) {
+        for (const f of this.sky.figures) {
+          if (!f.label || f.label.alt < 5 || f.rank > cfg.constellationNameRank) continue;
+          const p = this.projectSky(f.label.az, f.label.alt, cfg, proj);
+          this.skyLabel(p, f.name.toUpperCase(), cfg, 0.3 * b, "#8090B8", "center");
+        }
+      }
+    }
+
     // Asterism lines (faint) — need star screen points by id.
     if (cfg.showStars && this.sky.stars.length) {
       const pts = new Map<string, Point>();
@@ -813,7 +895,7 @@ export class Renderer {
       ctx.save();
       ctx.strokeStyle = `rgba(150,170,220,${0.14 * b})`;
       ctx.lineWidth = 1;
-      for (const [a, c] of visibleAsterisms(cfg.constellations)) {
+      for (const [a, c] of visibleAsterisms(cfg.constellations, cfg.showConstellationLines)) {
         const pa = pts.get(a);
         const pc = pts.get(c);
         if (pa && pc) {
@@ -827,11 +909,17 @@ export class Renderer {
 
       // Stars themselves, sized + twinkling by magnitude.
       for (const s of this.sky.stars) {
-        const p = pts.get(s.id!)!;
+        const p = (s.id && pts.get(s.id)) || this.projectSky(s.az, s.alt, cfg, proj);
         const mag = s.mag ?? 2;
         const size = starDrawSize(mag);
         const tw = 0.78 + 0.22 * Math.sin(this.frameT * 3 + s.az);
-        const a = clamp01((2.8 - mag) / 3) * b * tw;
+        const a = starAlpha(mag) * b * tw;
+        if (mag > 3) {
+          // The faint field is thousands of points: a square is cheaper than an arc.
+          ctx.fillStyle = `rgba(214,224,255,${a})`;
+          ctx.fillRect(p.x - size, p.y - size, size * 2, size * 2);
+          continue;
+        }
         ctx.beginPath();
         ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(214,224,255,${a})`;
@@ -899,6 +987,8 @@ export class Renderer {
 
         this.satPickables.push({ id: satId, kind: "satellite", x: p.x, y: p.y, sat });
 
+        // The ISS stays on screen through Earth's shadow, dimmed.
+        const lit = sat.sunlit !== false;
         const baseSize = iss ? 3 : 1.6;
         const hoverMul = this.easedScale(satId, isActive);
         const size = baseSize * hoverMul;
@@ -906,7 +996,7 @@ export class Renderer {
 
         ctx.beginPath();
         ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${dotColor},${(iss || isActive ? 0.95 : 0.65) * b})`;
+        ctx.fillStyle = `rgba(${dotColor},${(iss || isActive ? 0.95 : 0.65) * (lit ? 1 : 0.35) * b})`;
         if (iss || isActive) {
           ctx.shadowColor = `rgba(${dotColor},${b})`;
           ctx.shadowBlur = isActive ? 12 : 10;

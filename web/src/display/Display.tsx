@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Config, Theme } from "@shared/index.js";
 import type { SkyBody } from "./celestial.js";
-import { DEFAULT_CONFIG, formatDistance } from "@shared/index.js";
+import { DEFAULT_CONFIG, formatDistance, MAX_RADIUS_MI } from "@shared/index.js";
 import { useStream } from "../lib/useStream.js";
 import { useAmbientMode, kioskRequested } from "../lib/useAmbientMode.js";
 import { Renderer, type Pickable } from "./renderer.js";
@@ -324,7 +324,7 @@ export function Display() {
           conn.patchConfig({ radiusMiles: Math.max(0.5, c.radiusMiles - 0.5) });
           break;
         case "]":
-          conn.patchConfig({ radiusMiles: c.radiusMiles + 0.5 });
+          conn.patchConfig({ radiusMiles: Math.min(MAX_RADIUS_MI, c.radiusMiles + 0.5) });
           break;
         case "h":
           conn.patchConfig({ showHud: !c.showHud });

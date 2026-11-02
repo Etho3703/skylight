@@ -17,6 +17,9 @@ import { SFO_AIRPORT, type Airport } from "./airport.js";
 import { CONSTELLATIONS } from "./stars.js";
 
 export type Theme = "ambient" | "telemetry" | "focus";
+/** Show the planetarium star field by itself: never, or while no aircraft
+ *  are in range (planes still appear as they arrive). */
+export type PlanetariumAuto = "off" | "quiet";
 export type LabelDensity = "all" | "nearestN" | "nearestOnly";
 export type DataSource = "radio" | "api";
 export type NameDisplay = "airline" | "flight";
@@ -26,7 +29,7 @@ export type SpeedUnit = "kt" | "mph" | "kmh";
 /** Altitude display unit. */
 export type AltitudeUnit = "ft" | "m";
 /** Distance display unit. */
-export type DistanceUnit = "mi" | "km";
+export type DistanceUnit = "mi" | "km" | "nm";
 /** map = flat ground plan; sky = look-up dome with altitude-aware motion. */
 export type ProjectionMode = "map" | "sky";
 
@@ -455,6 +458,10 @@ export interface Config {
 
   /** Planetarium mode — celestial bodies only, no aircraft. */
   planetariumMode: boolean;
+  /** Switch to planetarium mode automatically (see PlanetariumAuto). */
+  planetariumAuto: PlanetariumAuto;
+  /** Faintest star magnitude while planetarium mode is on (up to 6, the naked-eye limit). */
+  planetariumStarMagLimit: number;
 
   // --- sky layer (sun / moon / stars / satellites at true positions) ---
   showStars: boolean;
@@ -463,12 +470,22 @@ export interface Config {
   showSatellites: boolean; // includes the ISS
   /** Label non-ISS satellites with their names (the ISS is always labelled). */
   satelliteLabels: boolean;
+  /** CelesTrak groups to draw (ids from SATELLITE_GROUPS). */
+  satelliteGroups: string[];
+  /** Hide satellites in Earth's shadow, as the eye would; the ISS dims instead. */
+  satellitesSunlitOnly: boolean;
   /** Draw the naked-eye planets (Venus, Jupiter, Mars, Saturn, Mercury). */
   showPlanets: boolean;
   /** Surface upcoming local sky events (moon phases, eclipses, meteor showers, etc.) as a "look up" nudge. */
   showSkyEvents: boolean;
   /** Per-constellation asterism line visibility. Missing/unknown ids default to visible. */
   constellations: Record<string, boolean>;
+  /** Faint lines for all 88 IAU constellation figures. */
+  showConstellationLines: boolean;
+  /** Constellation names at each figure's center. */
+  showConstellationNames: boolean;
+  /** Name constellations up to this prominence rank: 1 = the famous ones, 3 = all. */
+  constellationNameRank: number;
   /** Faintest star magnitude to draw (higher = more stars). */
   starMagLimit: number;
   /** Faintest star magnitude to label with its name (higher = more names). */
@@ -562,14 +579,21 @@ export const DEFAULT_CONFIG: Config = {
   showHud: false,
 
   planetariumMode: false,
+  planetariumAuto: "off",
+  planetariumStarMagLimit: 5,
   showStars: true,
   showSun: true,
   showMoon: true,
   showSatellites: true,
   satelliteLabels: false,
+  satelliteGroups: ["visual"],
+  satellitesSunlitOnly: true,
   showPlanets: true,
   showSkyEvents: false,
   constellations: Object.fromEntries(CONSTELLATIONS.map((c) => [c.id, true])),
+  showConstellationLines: true,
+  showConstellationNames: true,
+  constellationNameRank: 2,
   starMagLimit: 2.6,
   starLabelMagLimit: 0.3,
   skyTimeOffsetMin: 0,
