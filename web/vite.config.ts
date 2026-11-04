@@ -13,6 +13,10 @@ export default defineConfig({
   },
   server: {
     host: true, // expose dev server on LAN too
+    // Vite only answers its own IPs and localhost; name the Mac so the phone
+    // can use its mDNS name. Lowercase: browsers lowercase the Host header and
+    // Vite matches it exactly.
+    allowedHosts: ["katies-macbook-air.local"],
     fs: { allow: [resolve(__dirname, ".."), SHARED] },
     proxy: {
       // tracker first: more specific prefixes win over the bare /api below
