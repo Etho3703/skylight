@@ -143,6 +143,10 @@ function bodyAltAz(
   return { az: hor.azimuth, alt: hor.altitude };
 }
 
+/** The ISS itself: Zarya, NORAD 25544. The stations group also lists docked
+ *  modules (Nauka…) under their own ids and an "ISS (…)" name. */
+const isIssTle = (tle: Tle) => /^1\s+25544/.test(tle.line1);
+
 const satrecCache = new Map<string, satelliteNS.SatRec>();
 function getSatrec(tle: Tle): satelliteNS.SatRec | null {
   const key = tle.line1 + tle.line2;
@@ -215,6 +219,9 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
     const sl = Math.hypot(sv.x, sv.y, sv.z);
     const sun = { x: sv.x / sl, y: sv.y / sl, z: sv.z / sl };
     for (const tle of o.tles) {
+      const isISS = isIssTle(tle);
+      // A docked module rides with the ISS: drawn, it's a second ISS on top.
+      if (!isISS && /\bISS\b/i.test(tle.name)) continue;
       const rec = getSatrec(tle);
       if (!rec) continue;
       const pv = satellite.propagate(rec, date);
@@ -226,7 +233,6 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
       if (alt < 0) continue; // below horizon
       const gd = satellite.eciToGeodetic(pos, gmst);
       const altitudeKm = gd.height; // km above WGS84 ellipsoid
-      const isISS = /\bISS\b|\bZARYA\b/i.test(tle.name);
       const sunlit = satSunlit(pos, sun);
       if (o.sunlitOnly && !sunlit && !isISS) continue;
       const noradIdMatch = tle.line1.match(/^1\s+(\d+)/);
@@ -267,7 +273,7 @@ export function nextISSPass(
   minAlt = 10,
   horizonHours = 12,
 ): number | null {
-  const iss = tles.find((t) => /\bISS\b|\bZARYA\b/i.test(t.name));
+  const iss = tles.find(isIssTle);
   if (!iss) return null;
   const rec = getSatrec(iss);
   if (!rec) return null;
