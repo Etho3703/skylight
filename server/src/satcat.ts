@@ -6,6 +6,8 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
+import { API_USER_AGENT } from "./datasource.js";
+import { CELESTRAK_RETRY_MS } from "./tle.js";
 
 const GROUPS: Record<string, string> = {
   "stations": "Space station",
@@ -69,6 +71,8 @@ export class SatCatStore {
   private entries = new Map<string, SatCatEntry>();
   private fetchedAt = 0;
   private ttlMs = 12 * 3600_000;
+  private failedAt = 0;
+  private inflight: Promise<void> | null = null;
 
   constructor(private cachePath: string) {}
 
@@ -81,13 +85,24 @@ export class SatCatStore {
     } catch {
       /* first run */
     }
-    void this.refresh();
-    setInterval(() => void this.refresh(), 6 * 3600_000).unref?.();
+    // Only when stale: a refresh is ~20 CelesTrak downloads, and a restart
+    // (or a dev-server restart loop) mustn't repeat them.
+    void this.refreshIfStale();
+    setInterval(() => void this.refreshIfStale(), 6 * 3600_000).unref?.();
   }
 
+  /** Answers from cache and refreshes behind it; waits only when empty. */
   async get(): Promise<SatCatEntry[]> {
-    if (Date.now() - this.fetchedAt > this.ttlMs) await this.refresh();
+    if (this.entries.size) void this.refreshIfStale();
+    else await this.refreshIfStale();
     return [...this.entries.values()];
+  }
+
+  private refreshIfStale(): Promise<void> {
+    if (Date.now() - this.fetchedAt <= this.ttlMs) return Promise.resolve();
+    if (Date.now() - this.failedAt < CELESTRAK_RETRY_MS) return Promise.resolve();
+    this.inflight ??= this.refresh().finally(() => (this.inflight = null));
+    return this.inflight;
   }
 
   private async fetchCategories(): Promise<Map<string, string> | null> {
@@ -96,7 +111,12 @@ export class SatCatStore {
     for (const [group, label] of Object.entries(GROUPS)) {
       try {
         const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=tle`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        const res = await fetch(url, {
+          headers: { "User-Agent": API_USER_AGENT },
+          signal: AbortSignal.timeout(15000),
+        });
+        // Refused or rate-limited: asking for the other groups only adds to it.
+        if (res.status === 403 || res.status === 429) break;
         if (!res.ok) continue;
         const text = await res.text();
         const lines = text.split(/\r?\n/).map((l) => l.trimEnd()).filter((l) => l.length);
@@ -107,7 +127,9 @@ export class SatCatStore {
         }
         anySuccess = true;
       } catch {
-        /* skip this group */
+        // Unreachable (timeout, reset, DNS), not a bad group: the rest would
+        // fail the same way, 15 s apiece.
+        break;
       }
     }
     return anySuccess ? byId : null;
@@ -116,6 +138,7 @@ export class SatCatStore {
   private async fetchLaunchInfo(): Promise<Map<string, { launchDate?: string; owner?: string }> | null> {
     try {
       const res = await fetch("https://celestrak.org/pub/satcat.csv", {
+        headers: { "User-Agent": API_USER_AGENT },
         signal: AbortSignal.timeout(30000),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -151,7 +174,10 @@ export class SatCatStore {
       this.fetchLaunchInfo(),
     ]);
     if (!categories && !launchInfo) {
-      console.error("[satcat] refresh failed entirely (using cache)");
+      this.failedAt = Date.now();
+      console.error(
+        `[satcat] refresh failed entirely (using cache, retry in ${CELESTRAK_RETRY_MS / 60_000} min)`,
+      );
       return;
     }
 

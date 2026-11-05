@@ -6,6 +6,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isSatelliteGroup } from "@shared/index.js";
+import { API_USER_AGENT } from "./datasource.js";
 
 export interface Tle {
   name: string;
@@ -18,6 +19,10 @@ const groupUrl = (group: string) =>
 
 /** CelesTrak asks clients not to re-download a group more than every 2 h. */
 const MIN_REFETCH_MS = 2 * 3600_000;
+
+/** After a failed fetch, wait this long before asking CelesTrak again.
+ *  Retrying on every request is what keeps a blocked IP blocked. */
+export const CELESTRAK_RETRY_MS = 30 * 60_000;
 
 const noradId = (t: Tle) => t.line1.slice(2, 7).trim();
 
@@ -43,6 +48,7 @@ export class TleStore {
   private groups = new Map<string, GroupCache>();
   private ttlMs = 24 * 3600_000;
   private inflight = new Map<string, Promise<void>>();
+  private failedAt = new Map<string, number>();
 
   /** `getGroups` returns the CelesTrak groups to serve.
    *  TLE_URL, if set, replaces them all with one custom source. */
@@ -75,14 +81,15 @@ export class TleStore {
   }
 
   /** TLEs for the selected groups, merged and de-duplicated by NORAD id.
-   *  A newly selected group is fetched before answering. */
+   *  Stale groups answer from cache and refresh behind the response, so a
+   *  slow or unreachable CelesTrak can't stall the page; only a group with
+   *  nothing cached yet (newly selected) is fetched before answering. */
   async get(): Promise<Tle[]> {
     const keys = this.keys();
-    await Promise.all(
-      keys
-        .filter((k) => Date.now() - (this.groups.get(k)?.at ?? 0) > this.ttlMs)
-        .map((k) => this.refresh(k)),
-    );
+    const stale = keys.filter((k) => Date.now() - (this.groups.get(k)?.at ?? 0) > this.ttlMs);
+    const empty = stale.filter((k) => !this.groups.get(k)?.tles.length);
+    for (const k of stale) if (!empty.includes(k)) void this.refresh(k);
+    await Promise.all(empty.map((k) => this.refresh(k)));
     const seen = new Set<string>();
     const out: Tle[] = [];
     for (const k of keys) {
@@ -117,17 +124,26 @@ export class TleStore {
   private async fetchGroup(key: string): Promise<void> {
     const cached = this.groups.get(key);
     if (cached && cached.tles.length && Date.now() - cached.at < MIN_REFETCH_MS) return;
+    if (Date.now() - (this.failedAt.get(key) ?? 0) < CELESTRAK_RETRY_MS) return;
     const url = key === "custom" && this.customUrl ? this.customUrl : groupUrl(key);
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+      const res = await fetch(url, {
+        headers: { "User-Agent": API_USER_AGENT },
+        signal: AbortSignal.timeout(20000),
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const tles = parseTle(await res.text());
       if (!tles.length) throw new Error("no TLEs in response");
       this.groups.set(key, { at: Date.now(), tles });
+      this.failedAt.delete(key);
       await this.save();
       console.log(`[tle] refreshed ${key}: ${tles.length} satellites`);
     } catch (err) {
-      console.error(`[tle] ${key} refresh failed (using cache):`, err instanceof Error ? err.message : err);
+      this.failedAt.set(key, Date.now());
+      console.error(
+        `[tle] ${key} refresh failed (using cache, retry in ${CELESTRAK_RETRY_MS / 60_000} min):`,
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
