@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { createLogger, defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 
@@ -6,7 +6,19 @@ const SHARED = resolve(__dirname, "../shared/src");
 const SERVER = process.env.SERVER_URL ?? "http://localhost:3000";
 const TRACKER = process.env.TRACKER_URL ?? "http://localhost:3001";
 
+// A tab that reloads, navigates, hot-reloads or sleeps drops its proxied
+// WebSocket mid-stream, and Vite prints a stack trace for each one. The page
+// reconnects by itself, so leave those two out of the log.
+const logger = createLogger();
+const logError = logger.error.bind(logger);
+logger.error = (msg, options) => {
+  const code = (options?.error as { code?: string } | undefined)?.code;
+  if (msg.includes("ws proxy socket error") && (code === "ECONNRESET" || code === "EPIPE")) return;
+  logError(msg, options);
+};
+
 export default defineConfig({
+  customLogger: logger,
   plugins: [react()],
   resolve: {
     alias: { "@shared": SHARED },
