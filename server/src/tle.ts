@@ -20,9 +20,17 @@ const groupUrl = (group: string) =>
 /** CelesTrak asks clients not to re-download a group more than every 2 h. */
 const MIN_REFETCH_MS = 2 * 3600_000;
 
-/** After a failed fetch, wait this long before asking CelesTrak again.
- *  Retrying on every request is what keeps a blocked IP blocked. */
-export const CELESTRAK_RETRY_MS = 30 * 60_000;
+/** How long to wait before asking CelesTrak again after `failures` failed
+ *  fetches in a row: 30 min, doubling to a 6 h ceiling. Retrying on every
+ *  request is what keeps a blocked IP blocked. */
+export function celestrakRetryMs(failures: number): number {
+  return Math.min(30 * 60_000 * 2 ** Math.max(0, failures - 1), 6 * 3600_000);
+}
+
+/** "30 min" / "2 h", for the log line. */
+export function formatRetry(ms: number): string {
+  return ms < 3600_000 ? `${Math.round(ms / 60_000)} min` : `${ms / 3600_000} h`;
+}
 
 const noradId = (t: Tle) => t.line1.slice(2, 7).trim();
 
@@ -48,7 +56,8 @@ export class TleStore {
   private groups = new Map<string, GroupCache>();
   private ttlMs = 24 * 3600_000;
   private inflight = new Map<string, Promise<void>>();
-  private failedAt = new Map<string, number>();
+  /** Consecutive failures per group, for the retry back-off. */
+  private failures = new Map<string, { at: number; count: number }>();
 
   /** `getGroups` returns the CelesTrak groups to serve.
    *  TLE_URL, if set, replaces them all with one custom source. */
@@ -124,7 +133,8 @@ export class TleStore {
   private async fetchGroup(key: string): Promise<void> {
     const cached = this.groups.get(key);
     if (cached && cached.tles.length && Date.now() - cached.at < MIN_REFETCH_MS) return;
-    if (Date.now() - (this.failedAt.get(key) ?? 0) < CELESTRAK_RETRY_MS) return;
+    const failed = this.failures.get(key);
+    if (failed && Date.now() - failed.at < celestrakRetryMs(failed.count)) return;
     const url = key === "custom" && this.customUrl ? this.customUrl : groupUrl(key);
     try {
       const res = await fetch(url, {
@@ -135,13 +145,14 @@ export class TleStore {
       const tles = parseTle(await res.text());
       if (!tles.length) throw new Error("no TLEs in response");
       this.groups.set(key, { at: Date.now(), tles });
-      this.failedAt.delete(key);
+      this.failures.delete(key);
       await this.save();
       console.log(`[tle] refreshed ${key}: ${tles.length} satellites`);
     } catch (err) {
-      this.failedAt.set(key, Date.now());
+      const count = (failed?.count ?? 0) + 1;
+      this.failures.set(key, { at: Date.now(), count });
       console.error(
-        `[tle] ${key} refresh failed (using cache, retry in ${CELESTRAK_RETRY_MS / 60_000} min):`,
+        `[tle] ${key} refresh failed (using cache, retry in ${formatRetry(celestrakRetryMs(count))}):`,
         err instanceof Error ? err.message : err,
       );
     }

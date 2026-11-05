@@ -7,7 +7,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { API_USER_AGENT } from "./datasource.js";
-import { CELESTRAK_RETRY_MS } from "./tle.js";
+import { celestrakRetryMs, formatRetry } from "./tle.js";
 
 const GROUPS: Record<string, string> = {
   "stations": "Space station",
@@ -72,6 +72,7 @@ export class SatCatStore {
   private fetchedAt = 0;
   private ttlMs = 12 * 3600_000;
   private failedAt = 0;
+  private failures = 0;
   private inflight: Promise<void> | null = null;
 
   constructor(private cachePath: string) {}
@@ -100,7 +101,7 @@ export class SatCatStore {
 
   private refreshIfStale(): Promise<void> {
     if (Date.now() - this.fetchedAt <= this.ttlMs) return Promise.resolve();
-    if (Date.now() - this.failedAt < CELESTRAK_RETRY_MS) return Promise.resolve();
+    if (Date.now() - this.failedAt < celestrakRetryMs(this.failures)) return Promise.resolve();
     this.inflight ??= this.refresh().finally(() => (this.inflight = null));
     return this.inflight;
   }
@@ -175,11 +176,13 @@ export class SatCatStore {
     ]);
     if (!categories && !launchInfo) {
       this.failedAt = Date.now();
+      this.failures++;
       console.error(
-        `[satcat] refresh failed entirely (using cache, retry in ${CELESTRAK_RETRY_MS / 60_000} min)`,
+        `[satcat] refresh failed entirely (using cache, retry in ${formatRetry(celestrakRetryMs(this.failures))})`,
       );
       return;
     }
+    this.failures = 0;
 
     const merged = new Map<string, SatCatEntry>();
     const ids = new Set<string>([

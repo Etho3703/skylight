@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TleStore } from "../src/tle.js";
+import { TleStore, celestrakRetryMs, formatRetry } from "../src/tle.js";
 import { SatCatStore } from "../src/satcat.js";
 
 // CelesTrak firewalls IPs that ask too often. These pin down the polite side:
@@ -33,6 +33,13 @@ const unreachable = () =>
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+describe("celestrakRetryMs", () => {
+  it("waits 30 min, doubling with each failure up to 6 h", () => {
+    const steps = [1, 2, 3, 4, 5, 9].map((n) => formatRetry(celestrakRetryMs(n)));
+    expect(steps).toEqual(["30 min", "1 h", "2 h", "4 h", "6 h", "6 h"]);
+  });
 });
 
 describe("TleStore", () => {
