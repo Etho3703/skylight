@@ -27,9 +27,19 @@ interface RawAircraft {
   category?: string;
   r?: string;
   t?: string;
+  /** readsb database flags; bit 0 = military. */
+  dbFlags?: number;
   seen?: number;
   seen_pos?: number;
   rssi?: number;
+}
+
+/** The feed's military flag, or a US military ICAO address (AE0000–AFFFFF),
+ *  which works on a bare radio too. */
+export function isMilitary(hex: string, dbFlags?: number): boolean {
+  if (dbFlags != null && (dbFlags & 1) !== 0) return true;
+  const n = parseInt(hex, 16);
+  return n >= 0xae0000 && n <= 0xafffff;
 }
 
 /**
@@ -60,6 +70,7 @@ export function normalize(raw: RawAircraft, ts: number, jsonAgeSec = 0): Aircraf
     onGround,
     registration: raw.r,
     typeCode: raw.t,
+    military: isMilitary(raw.hex, raw.dbFlags) || undefined,
     seen: raw.seen != null ? raw.seen + jsonAgeSec : undefined,
     seenPos: raw.seen_pos != null ? raw.seen_pos + jsonAgeSec : undefined,
     rssi: raw.rssi,
@@ -481,6 +492,8 @@ export class Poller {
     if (e.aircraft) {
       ac.typeName = ac.typeName ?? e.aircraft.typeName;
       ac.registration = ac.registration ?? e.aircraft.registration;
+      // dump1090 sends no type code; the glyph shape needs one.
+      ac.typeCode = ac.typeCode ?? e.aircraft.typeCode;
     }
 
     // Sticky merge: once we've resolved something for this hex, never drop it

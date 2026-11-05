@@ -29,6 +29,9 @@ export interface Aircraft {
   registration?: string;
   /** ICAO type code, e.g. "B738" (dump1090 `t`). */
   typeCode?: string;
+  /** Military: the feed's database flag (readsb `dbFlags` bit 0) or a US
+   *  military ICAO address. Tells a KC-46 from an airline 767 (both B762). */
+  military?: boolean;
 
   /** Seconds since the last message for this aircraft (from the source). */
   seen?: number;

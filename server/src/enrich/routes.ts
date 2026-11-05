@@ -21,6 +21,8 @@ interface RouteInfo {
 interface AircraftInfo {
   typeName?: string;
   registration?: string;
+  /** ICAO type code, e.g. "B738". */
+  typeCode?: string;
 }
 interface CacheEntry<T> {
   data: T | null; // null = looked up, not found (negative cache)
@@ -135,6 +137,7 @@ export class RouteEnricher {
             data = {
               typeName: a.manufacturer && a.type ? `${a.manufacturer} ${a.type}` : a.type,
               registration: a.registration,
+              typeCode: a.icao_type,
             };
           }
         }
