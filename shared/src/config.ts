@@ -486,10 +486,16 @@ export interface Config {
   showConstellationNames: boolean;
   /** Name constellations up to this prominence rank: 1 = the famous ones, 3 = all. */
   constellationNameRank: number;
+  /** Opacity multiplier for constellation lines and names (1 = the original faint look). */
+  constellationBrightness: number;
   /** Faintest star magnitude to draw (higher = more stars). */
   starMagLimit: number;
   /** Faintest star magnitude to label with its name (higher = more names). */
   starLabelMagLimit: number;
+  /** Opacity multiplier for stars and their names (1 = the original look). */
+  starBrightness: number;
+  /** Font-size multiplier for sky names: constellations, stars, planets, satellites. */
+  skyLabelScale: number;
   /** Offset the sky clock for testing/scrubbing, minutes (0 = live). */
   skyTimeOffsetMin: number;
 
@@ -594,8 +600,13 @@ export const DEFAULT_CONFIG: Config = {
   showConstellationLines: true,
   showConstellationNames: true,
   constellationNameRank: 2,
+  // Brighter and larger than the original look, which washes out on a
+  // projector's grey blacks.
+  constellationBrightness: 2,
   starMagLimit: 2.6,
   starLabelMagLimit: 0.3,
+  starBrightness: 1.5,
+  skyLabelScale: 1.4,
   skyTimeOffsetMin: 0,
 
   showDestArc: true,

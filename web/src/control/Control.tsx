@@ -605,6 +605,10 @@ export function Control() {
                 <Slider id="starLabelMagLimit" value={cfg.starLabelMagLimit} min={0} max={3} step={0.1}
                   onChange={(v) => set({ starLabelMagLimit: v })} />
               </Row>
+              <Row label="Star brightness" hint="1 = original" indent={true}>
+                <Slider id="starBrightness" value={cfg.starBrightness} min={0.5} max={3} step={0.1} unit="×"
+                  onChange={(v) => set({ starBrightness: v })} />
+              </Row>
               <Row label="Constellation lines" hint="all 88" indent={true}>
                 <Toggle value={cfg.showConstellationLines} onChange={(v) => set({ showConstellationLines: v })} />
               </Row>
@@ -617,6 +621,10 @@ export function Control() {
                     onChange={(v) => set({ constellationNameRank: v })} />
                 </Row>
               )}
+              <Row label="Constellation brightness" hint="lines + names, 1 = original" indent={true}>
+                <Slider id="constellationBrightness" value={cfg.constellationBrightness} min={0.5} max={4} step={0.1}
+                  unit="×" onChange={(v) => set({ constellationBrightness: v })} />
+              </Row>
               {CONSTELLATIONS.filter((c) => !(cfg.showConstellationLines && c.iau)).map((c) => (
                 <Row key={c.id} label={c.name} indent={true}>
                   <Toggle value={cfg.constellations[c.id] !== false}
@@ -625,6 +633,10 @@ export function Control() {
               ))}
             </>
           )}
+          <Row label="Sky name size" hint="constellations, stars, planets, satellites">
+            <Slider id="skyLabelScale" value={cfg.skyLabelScale} min={0.8} max={2.5} step={0.1} unit="×"
+              onChange={(v) => set({ skyLabelScale: v })} />
+          </Row>
           <Row label="Sun">
             <Toggle value={cfg.showSun} onChange={(v) => set({ showSun: v })} />
           </Row>

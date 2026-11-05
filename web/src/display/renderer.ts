@@ -82,6 +82,11 @@ function starAlpha(mag: number): number {
   return Math.max(clamp01((2.8 - mag) / 3), 0.08 + 0.14 * clamp01((6 - mag) / 3.5));
 }
 
+/** Sky-name font: 10 px at scale 1, sized by the control panel. */
+function skyLabelFont(cfg: Config): string {
+  return `300 ${(10 * cfg.skyLabelScale).toFixed(1)}px ${cfg.fonts.label}`;
+}
+
 /** Meters per display distance unit, for the range rings. */
 const UNIT_M: Record<Config["distanceUnit"], number> = { mi: MI_TO_M, km: KM_TO_M, nm: NM_TO_M };
 
@@ -858,13 +863,16 @@ export class Renderer {
   private drawSky(cfg: Config, proj: ProjOpts): void {
     const ctx = this.ctx;
     const b = cfg.brightness;
+    // Control-panel multipliers on each layer's base opacity, capped at opaque.
+    const starA = (base: number) => Math.min(1, base * cfg.starBrightness);
+    const figA = (base: number) => Math.min(1, base * cfg.constellationBrightness);
     const skyLabels: SkyLabelEntry[] = [];
 
     // IAU constellation figures (fainter still than the asterisms) + names.
     if (cfg.showStars && this.sky.figures.length) {
       if (cfg.showConstellationLines) {
         ctx.save();
-        ctx.strokeStyle = `rgba(150,170,220,${0.1 * b})`;
+        ctx.strokeStyle = `rgba(150,170,220,${figA(0.1) * b})`;
         ctx.lineWidth = 1;
         ctx.beginPath();
         for (const f of this.sky.figures) {
@@ -887,7 +895,7 @@ export class Renderer {
         for (const f of this.sky.figures) {
           if (!f.label || f.label.alt < 5 || f.rank > cfg.constellationNameRank) continue;
           const p = this.projectSky(f.label.az, f.label.alt, cfg, proj);
-          this.skyLabel(p, f.name.toUpperCase(), cfg, 0.3 * b, "#8090B8", "center");
+          this.skyLabel(p, f.name.toUpperCase(), cfg, figA(0.3) * b, "#8090B8", "center");
         }
       }
     }
@@ -899,7 +907,7 @@ export class Renderer {
         if (s.id) pts.set(s.id, this.projectSky(s.az, s.alt, cfg, proj));
       }
       ctx.save();
-      ctx.strokeStyle = `rgba(150,170,220,${0.14 * b})`;
+      ctx.strokeStyle = `rgba(150,170,220,${figA(0.14) * b})`;
       ctx.lineWidth = 1;
       for (const [a, c] of visibleAsterisms(cfg.constellations, cfg.showConstellationLines)) {
         const pa = pts.get(a);
@@ -919,7 +927,7 @@ export class Renderer {
         const mag = s.mag ?? 2;
         const size = starDrawSize(mag);
         const tw = 0.78 + 0.22 * Math.sin(this.frameT * 3 + s.az);
-        const a = starAlpha(mag) * b * tw;
+        const a = starA(starAlpha(mag)) * b * tw;
         if (mag > 3) {
           // The faint field is thousands of points: a square is cheaper than an arc.
           ctx.fillStyle = `rgba(214,224,255,${a})`;
@@ -941,7 +949,7 @@ export class Renderer {
             name: s.name,
             color: "#AEB6C6",
             size,
-            alpha: 0.5 * b,
+            alpha: starA(0.5) * b,
             priority: mag,
           });
         }
@@ -1095,7 +1103,7 @@ export class Renderer {
     const ctx = this.ctx;
     this.withLabelRotation(cfg, p.x, p.y, () => {
       ctx.save();
-      ctx.font = `300 10px ${cfg.fonts.label}`;
+      ctx.font = skyLabelFont(cfg);
       ctx.fillStyle = color;
       ctx.globalAlpha = alpha;
       ctx.textAlign = align;
@@ -1118,7 +1126,7 @@ export class Renderer {
 
   private measureSkyLabel(text: string, cfg: Config): { w: number; h: number } {
     const ctx = this.ctx;
-    ctx.font = `300 10px ${cfg.fonts.label}`;
+    ctx.font = skyLabelFont(cfg);
     try {
       ctx.letterSpacing = "1px";
     } catch {
@@ -1130,7 +1138,7 @@ export class Renderer {
     } catch {
       /* noop */
     }
-    return { w: w + 2, h: 12 };
+    return { w: w + 2, h: 12 * cfg.skyLabelScale };
   }
 
   private skyLabelBox(
