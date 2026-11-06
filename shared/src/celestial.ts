@@ -6,12 +6,17 @@
 import * as AstronomyNS from "astronomy-engine";
 import * as satelliteNS from "satellite.js";
 import { DEG } from "./constants.js";
+import type { GpElements } from "./gp.js";
 import { STARS } from "./stars.js";
 import { STARFIELD, CONSTELLATION_FIGURES } from "./skyCatalog.js";
+
+export type { GpElements } from "./gp.js";
 
 // Both packages ship UMD/CJS bundles. Under some Node versions the ESM
 // namespace only exposes `default` (the module lexer can't parse the UMD
 // wrapper), so unwrap it; in browsers/bundlers the namespace works directly.
+// (satellite.js 7 is ESM, but its WebAssembly extras don't bundle for the
+// browser; 6 has json2satrec, which is all this needs.)
 const Astronomy: typeof AstronomyNS =
   (AstronomyNS as unknown as { default?: typeof AstronomyNS }).default ?? AstronomyNS;
 const satellite: typeof satelliteNS =
@@ -45,12 +50,6 @@ export interface SkyFigure {
   lines: { az: number; alt: number }[][];
 }
 
-export interface Tle {
-  name: string;
-  line1: string;
-  line2: string;
-}
-
 export interface Sky {
   sun?: SkyBody;
   moon?: SkyBody;
@@ -67,7 +66,7 @@ export interface SkyOpts {
   satellites: boolean;
   planets: boolean;
   magLimit: number;
-  tles: Tle[];
+  orbits: GpElements[];
   /** Compute the 88 IAU constellation figures. */
   figures?: boolean;
   /** Drop satellites in Earth's shadow (the ISS is kept, flagged unlit). */
@@ -145,15 +144,15 @@ function bodyAltAz(
 
 /** The ISS itself: Zarya, NORAD 25544. The stations group also lists docked
  *  modules (Nauka…) under their own ids and an "ISS (…)" name. */
-const isIssTle = (tle: Tle) => /^1\s+25544/.test(tle.line1);
+const isIss = (gp: GpElements) => gp.NORAD_CAT_ID === 25544;
 
 const satrecCache = new Map<string, satelliteNS.SatRec>();
-function getSatrec(tle: Tle): satelliteNS.SatRec | null {
-  const key = tle.line1 + tle.line2;
+function getSatrec(gp: GpElements): satelliteNS.SatRec | null {
+  const key = `${gp.NORAD_CAT_ID}@${gp.EPOCH}`;
   let rec = satrecCache.get(key);
   if (!rec) {
     try {
-      rec = satellite.twoline2satrec(tle.line1, tle.line2);
+      rec = satellite.json2satrec(gp);
     } catch {
       return null;
     }
@@ -206,7 +205,7 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
       sky.figures.push({ id: f.id, name: f.name, rank: f.rank, label, lines });
     }
   }
-  if (o.satellites && o.tles.length) {
+  if (o.satellites && o.orbits.length) {
     const gmst = satellite.gstime(date);
     const observerGd = {
       longitude: lonDeg * DEG,
@@ -214,19 +213,18 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
       height: 0,
     };
     // Sun direction (equatorial, unit) for the Earth-shadow test. J2000 vs
-    // the TLEs' TEME frame differ by well under a degree - irrelevant here.
+    // the orbits' TEME frame differ by well under a degree - irrelevant here.
     const sv = Astronomy.GeoVector(Astronomy.Body.Sun, date, true);
     const sl = Math.hypot(sv.x, sv.y, sv.z);
     const sun = { x: sv.x / sl, y: sv.y / sl, z: sv.z / sl };
-    for (const tle of o.tles) {
-      const isISS = isIssTle(tle);
+    for (const gp of o.orbits) {
+      const isISS = isIss(gp);
       // A docked module rides with the ISS: drawn, it's a second ISS on top.
-      if (!isISS && /\bISS\b/i.test(tle.name)) continue;
-      const rec = getSatrec(tle);
+      if (!isISS && /\bISS\b/i.test(gp.OBJECT_NAME)) continue;
+      const rec = getSatrec(gp);
       if (!rec) continue;
-      const pv = satellite.propagate(rec, date);
-      const pos = pv?.position;
-      if (!pos || typeof pos === "boolean") continue;
+      const pos = satellite.propagate(rec, date)?.position;
+      if (!pos) continue;
       const ecf = satellite.eciToEcf(pos, gmst);
       const look = satellite.ecfToLookAngles(observerGd, ecf);
       const alt = look.elevation * R2D;
@@ -235,11 +233,10 @@ export function computeSky(date: Date, latDeg: number, lonDeg: number, o: SkyOpt
       const altitudeKm = gd.height; // km above WGS84 ellipsoid
       const sunlit = satSunlit(pos, sun);
       if (o.sunlitOnly && !sunlit && !isISS) continue;
-      const noradIdMatch = tle.line1.match(/^1\s+(\d+)/);
       sky.sats.push({
         kind: isISS ? "iss" : "satellite",
-        name: tle.name.replace(/\s*\(.*\)\s*$/, "").trim(),
-        noradId: noradIdMatch ? noradIdMatch[1] : undefined,
+        name: gp.OBJECT_NAME.replace(/\s*\(.*\)\s*$/, "").trim(),
+        noradId: String(gp.NORAD_CAT_ID),
         az: norm360(look.azimuth * R2D),
         alt,
         altitudeKm,
@@ -269,11 +266,11 @@ export function nextISSPass(
   fromMs: number,
   latDeg: number,
   lonDeg: number,
-  tles: Tle[],
+  orbits: GpElements[],
   minAlt = 10,
   horizonHours = 12,
 ): number | null {
-  const iss = tles.find(isIssTle);
+  const iss = orbits.find(isIss);
   if (!iss) return null;
   const rec = getSatrec(iss);
   if (!rec) return null;
@@ -281,9 +278,8 @@ export function nextISSPass(
   const stepMs = 30_000;
   for (let t = fromMs + stepMs; t < fromMs + horizonHours * 3600_000; t += stepMs) {
     const date = new Date(t);
-    const pv = satellite.propagate(rec, date);
-    const pos = pv?.position;
-    if (!pos || typeof pos === "boolean") continue;
+    const pos = satellite.propagate(rec, date)?.position;
+    if (!pos) continue;
     const ecf = satellite.eciToEcf(pos, satellite.gstime(date));
     const alt = satellite.ecfToLookAngles(observerGd, ecf).elevation * R2D;
     if (alt >= minAlt) return t;

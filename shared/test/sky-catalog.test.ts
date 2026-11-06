@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as satellite from "satellite.js";
 import { computeSky, satSunlit } from "../src/celestial.js";
+import { tleToGp } from "../src/gp.js";
 import { CONSTELLATION_FIGURES, STARFIELD } from "../src/skyCatalog.js";
 import { visibleAsterisms, CONSTELLATIONS } from "../src/stars.js";
 
@@ -9,7 +10,7 @@ const SFO = { lat: 37.6213, lon: -122.379 };
 const WINTER_NIGHT = new Date("2026-01-16T06:00:00Z");
 
 const base = {
-  sun: false, moon: false, stars: true, satellites: false, planets: false, tles: [],
+  sun: false, moon: false, stars: true, satellites: false, planets: false, orbits: [],
 };
 
 describe("star field", () => {
@@ -68,27 +69,27 @@ describe("Earth shadow", () => {
 
 describe("ISS", () => {
   // Same orbit: Nauka is docked to the ISS but cataloged on its own.
-  const zarya = {
-    name: "ISS (ZARYA)",
-    line1: "1 25544U 98067A   26305.53114906  .00006056  00000+0  11739-3 0  9995",
-    line2: "2 25544  51.6332 340.4448 0007086 335.8887  24.1768 15.49140542593046",
-  };
-  const nauka = {
-    name: "ISS (NAUKA)",
-    line1: "1 49044U 21066A   26305.53114906  .00006056  00000+0  11739-3 0  9991",
-    line2: "2 49044  51.6332 340.4448 0007086 335.8887  24.1768 15.49140542586634",
-  };
+  const zarya = tleToGp(
+    "ISS (ZARYA)",
+    "1 25544U 98067A   26305.53114906  .00006056  00000+0  11739-3 0  9995",
+    "2 25544  51.6332 340.4448 0007086 335.8887  24.1768 15.49140542593046",
+  )!;
+  const nauka = tleToGp(
+    "ISS (NAUKA)",
+    "1 49044U 21066A   26305.53114906  .00006056  00000+0  11739-3 0  9991",
+    "2 49044  51.6332 340.4448 0007086 335.8887  24.1768 15.49140542586634",
+  )!;
 
   it("draws once when the stations group adds its docked modules", () => {
     // Stand under the station at its epoch so it's overhead.
     const date = new Date(Date.UTC(2026, 10, 1, 12, 44, 51));
-    const rec = satellite.twoline2satrec(zarya.line1, zarya.line2);
+    const rec = satellite.json2satrec(zarya);
     const pos = satellite.propagate(rec, date)?.position;
-    if (!pos || typeof pos === "boolean") throw new Error("no ISS position");
+    if (!pos) throw new Error("no ISS position");
     const gd = satellite.eciToGeodetic(pos, satellite.gstime(date));
     const sky = computeSky(date, satellite.degreesLat(gd.latitude), satellite.degreesLong(gd.longitude), {
       satellites: true,
-      tles: [zarya, nauka],
+      orbits: [zarya, nauka],
     });
     expect(sky.sats).toHaveLength(1);
     expect(sky.sats[0]).toMatchObject({ kind: "iss", noradId: "25544" });

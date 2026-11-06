@@ -12,7 +12,7 @@
   "dependencies": {
     "astronomy-engine": "^2.1.19",
     "express": "^4.21.2",
-    "satellite.js": "^5.0.0",
+    "satellite.js": "^6.0.2",
     "sharp": "^0.34.5",
     "ws": "^8.18.0"
   },

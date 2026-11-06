@@ -49,8 +49,8 @@ importers:
         specifier: ^2.1.19
         version: 2.1.19
       satellite.js:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: ^6.0.2
+        version: 6.0.2
     devDependencies:
       typescript:
         specifier: ^5.7.2
@@ -65,8 +65,8 @@ importers:
         specifier: ^4.21.2
         version: 4.22.2
       satellite.js:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: ^6.0.2
+        version: 6.0.2
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
@@ -106,8 +106,8 @@ importers:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
       satellite.js:
-        specifier: ^5.0.0
-        version: 5.0.0
+        specifier: ^6.0.2
+        version: 6.0.2
       tz-lookup:
         specifier: ^6.1.25
         version: 6.1.25
@@ -1435,8 +1435,8 @@ packages:
   safer-buffer@2.1.2:
     resolution: {integrity: sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg==}
 
-  satellite.js@5.0.0:
-    resolution: {integrity: sha512-ie3yiJ2LJAJIhVUKdYhgp7V0btXKAMImDjRnuaNfJGl8rjwP2HwVIh4HLFcpiXYEiYwXc5fqh5+yZqCe6KIwWw==}
+  satellite.js@6.0.2:
+    resolution: {integrity: sha512-XWKxtqVF5xiJ1xAeiYeT/oSSzsukoCLWvk6nO/WFy4un0M3g4djAU9TAtOCqJLtYW9vxx9pkPJ1L9ITOc607GA==}
 
   scheduler@0.23.2:
     resolution: {integrity: sha512-UOShsPwz7NrMUqhR6t0hWjFduvOzbtv7toDH1/hIrfRNIDBnnBWd0CwJTGvTpngVlmwGCdP9/Zl/tVrDqcuYzQ==}
@@ -2867,7 +2867,7 @@ snapshots:
 
   safer-buffer@2.1.2: {}
 
-  satellite.js@5.0.0: {}
+  satellite.js@6.0.2: {}
 
   scheduler@0.23.2:
     dependencies:

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "astronomy-engine": "^2.1.19",
-    "satellite.js": "^5.0.0"
+    "satellite.js": "^6.0.2"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

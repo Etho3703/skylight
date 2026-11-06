@@ -13,6 +13,7 @@ import { RouteEnricher } from "./enrich/routes.js";
 import { AggregatorGate, Poller } from "./datasource.js";
 import { startTelemetry } from "./telemetry.js";
 import { Hub } from "./hub.js";
+import { CelesTrak } from "./celestrak.js";
 import { TleStore } from "./tle.js";
 import { SatCatStore } from "./satcat.js";
 import { resolveLocation } from "./geocode.js";
@@ -76,10 +77,20 @@ async function main(): Promise<void> {
   );
   await enricher.load();
 
-  const tleStore = new TleStore(resolve(DATA_DIR, "tle-cache.json"), () => store.get().satelliteGroups);
+  // Every CelesTrak download goes through this one gate (see celestrak.ts).
+  const celestrak = new CelesTrak(resolve(DATA_DIR, "celestrak-state.json"));
+  await celestrak.load();
+  // Nothing to download while satellites are hidden.
+  const drawnGroups = () => (store.get().showSatellites ? store.get().satelliteGroups : []);
+
+  const tleStore = new TleStore(resolve(DATA_DIR, "tle-cache.json"), drawnGroups, celestrak);
   await tleStore.load();
 
-  const satCatStore = new SatCatStore(resolve(DATA_DIR, "satcat-cache.json"));
+  const satCatStore = new SatCatStore(
+    resolve(DATA_DIR, "satcat-cache.json"),
+    () => (process.env.TLE_URL ? [] : drawnGroups()),
+    celestrak,
+  );
   await satCatStore.load();
 
   const app = express();
@@ -165,6 +176,8 @@ async function main(): Promise<void> {
   app.get("/api/status", (_req, res) => res.json(poller.getStatus()));
   app.get("/api/tle", async (_req, res) => res.json(await tleStore.get()));
   app.get("/api/satcat", async (_req, res) => res.json(await satCatStore.get()));
+  app.get("/api/celestrak", (_req, res) => res.json(celestrak.status()));
+  app.post("/api/celestrak/resume", async (_req, res) => res.json(await celestrak.resume()));
   // Resolve a 3-letter airport code to its city name (for the click-card's
   // route display), a lighter-weight lookup than the full runway geometry.
   app.get("/api/city", async (req, res) => {

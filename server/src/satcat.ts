@@ -1,31 +1,34 @@
-// Fetches CelesTrak's official satellite category groupings (Starlink, GPS,
-// weather, science, stations, etc.) plus the bulk SATCAT (launch date, owning
-// country) for every cataloged object, merges them by NORAD ID, and caches
-// the result on disk. Used to label a clicked satellite with real
-// classification and launch info rather than guessing from its name.
+// Labels a clicked satellite with what it is, who owns it and when it
+// launched, from CelesTrak's SATCAT, instead of guessing from its name. Only
+// the groups being drawn are looked up, one small query each, and only once
+// someone opens a satellite card. Kept a week: launch dates and owners don't
+// change, and a brand-new satellite just shows without them for a few days.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { API_USER_AGENT } from "./datasource.js";
-import { celestrakRetryMs, formatRetry } from "./tle.js";
+import { isSatelliteGroup } from "@shared/index.js";
+import { parseCsv, type CelesTrak } from "./celestrak.js";
 
-const GROUPS: Record<string, string> = {
+const groupUrl = (group: string) =>
+  `https://celestrak.org/satcat/records.php?GROUP=${encodeURIComponent(group)}&FORMAT=CSV`;
+
+/** What a group says about its members. "visual" (brightest) says nothing. */
+const GROUP_KIND: Record<string, string> = {
   "stations": "Space station",
   "starlink": "Starlink internet satellite",
   "oneweb": "OneWeb internet satellite",
   "gps-ops": "GPS navigation satellite",
-  "glo-ops": "GLONASS navigation satellite",
   "galileo": "Galileo navigation satellite",
-  "beidou": "BeiDou navigation satellite",
   "weather": "Weather satellite",
-  "noaa": "Weather satellite",
-  "goes": "Weather satellite",
   "science": "Science satellite",
   "geo": "Geostationary communications satellite",
-  "intelsat": "Communications satellite",
-  "ses": "Communications satellite",
   "amateur": "Amateur radio satellite",
-  "military": "Military satellite",
+};
+
+/** SATCAT OBJECT_TYPE, when it says more than "payload". */
+const OBJECT_KIND: Record<string, string> = {
+  "R/B": "Rocket body",
+  "DEB": "Debris",
 };
 
 /** OWNER codes are CelesTrak's own registry abbreviations, not ISO codes. */
@@ -43,167 +46,98 @@ export interface SatCatEntry {
   owner?: string;
 }
 
-function extractNoradId(line1: string): string | null {
-  const m = line1.match(/^1\s+(\d+)/);
-  return m ? m[1] : null;
+interface SatCatRecord {
+  noradId: string;
+  objectType?: string;
+  launchDate?: string;
+  owner?: string;
 }
 
-function parseCsvLine(line: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQ) {
-      if (ch === '"') {
-        if (line[i + 1] === '"') { cur += '"'; i++; }
-        else inQ = false;
-      } else cur += ch;
-    } else if (ch === '"') inQ = true;
-    else if (ch === ",") { out.push(cur); cur = ""; }
-    else cur += ch;
-  }
-  out.push(cur);
-  return out;
+interface GroupCache {
+  at: number;
+  records: SatCatRecord[];
 }
 
 export class SatCatStore {
-  private entries = new Map<string, SatCatEntry>();
-  private fetchedAt = 0;
-  private ttlMs = 12 * 3600_000;
-  private failedAt = 0;
-  private failures = 0;
-  private inflight: Promise<void> | null = null;
+  private groups = new Map<string, GroupCache>();
+  private ttlMs = 7 * 24 * 3600_000;
+  private inflight = new Map<string, Promise<void>>();
 
-  constructor(private cachePath: string) {}
+  /** `getGroups` returns the groups being drawn. */
+  constructor(
+    private cachePath: string,
+    private getGroups: () => string[],
+    private celestrak: CelesTrak,
+  ) {}
 
   async load(): Promise<void> {
     try {
-      const raw = await readFile(this.cachePath, "utf8");
-      const parsed = JSON.parse(raw) as { at: number; entries: SatCatEntry[] };
-      this.entries = new Map(parsed.entries.map((e) => [e.noradId, e]));
-      this.fetchedAt = parsed.at ?? 0;
+      const parsed = JSON.parse(await readFile(this.cachePath, "utf8")) as {
+        groups?: Record<string, GroupCache>;
+      };
+      // A cache from before (the whole catalog, no groups) is dropped.
+      for (const [g, c] of Object.entries(parsed.groups ?? {})) this.groups.set(g, c);
     } catch {
       /* first run */
     }
-    // Only when stale: a refresh is ~20 CelesTrak downloads, and a restart
-    // (or a dev-server restart loop) mustn't repeat them.
-    void this.refreshIfStale();
-    setInterval(() => void this.refreshIfStale(), 6 * 3600_000).unref?.();
   }
 
-  /** Answers from cache and refreshes behind it; waits only when empty. */
+  /** Answers from cache and refreshes behind it; waits only for a group with
+   *  nothing cached yet. */
   async get(): Promise<SatCatEntry[]> {
-    if (this.entries.size) void this.refreshIfStale();
-    else await this.refreshIfStale();
-    return [...this.entries.values()];
-  }
+    const keys = this.getGroups().filter(isSatelliteGroup);
+    const stale = keys.filter((k) => Date.now() - (this.groups.get(k)?.at ?? 0) > this.ttlMs);
+    const empty = stale.filter((k) => !this.groups.get(k)?.records.length);
+    for (const k of stale) if (!empty.includes(k)) void this.refresh(k);
+    await Promise.all(empty.map((k) => this.refresh(k)));
 
-  private refreshIfStale(): Promise<void> {
-    if (Date.now() - this.fetchedAt <= this.ttlMs) return Promise.resolve();
-    if (Date.now() - this.failedAt < celestrakRetryMs(this.failures)) return Promise.resolve();
-    this.inflight ??= this.refresh().finally(() => (this.inflight = null));
-    return this.inflight;
-  }
-
-  private async fetchCategories(): Promise<Map<string, string> | null> {
-    const byId = new Map<string, string>();
-    let anySuccess = false;
-    for (const [group, label] of Object.entries(GROUPS)) {
-      try {
-        const url = `https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=tle`;
-        const res = await fetch(url, {
-          headers: { "User-Agent": API_USER_AGENT },
-          signal: AbortSignal.timeout(15000),
-        });
-        // Refused or rate-limited: asking for the other groups only adds to it.
-        if (res.status === 403 || res.status === 429) break;
-        if (!res.ok) continue;
-        const text = await res.text();
-        const lines = text.split(/\r?\n/).map((l) => l.trimEnd()).filter((l) => l.length);
-        for (const line of lines) {
-          if (!line.startsWith("1 ")) continue;
-          const id = extractNoradId(line);
-          if (id && !byId.has(id)) byId.set(id, label);
-        }
-        anySuccess = true;
-      } catch {
-        // Unreachable (timeout, reset, DNS), not a bad group: the rest would
-        // fail the same way, 15 s apiece.
-        break;
-      }
-    }
-    return anySuccess ? byId : null;
-  }
-
-  private async fetchLaunchInfo(): Promise<Map<string, { launchDate?: string; owner?: string }> | null> {
-    try {
-      const res = await fetch("https://celestrak.org/pub/satcat.csv", {
-        headers: { "User-Agent": API_USER_AGENT },
-        signal: AbortSignal.timeout(30000),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      const lines = text.split(/\r?\n/).filter((l) => l.length);
-      const header = parseCsvLine(lines[0]);
-      const cId = header.indexOf("NORAD_CAT_ID");
-      const cOwner = header.indexOf("OWNER");
-      const cLaunch = header.indexOf("LAUNCH_DATE");
-      if (cId < 0) return null;
-
-      const out = new Map<string, { launchDate?: string; owner?: string }>();
-      for (let i = 1; i < lines.length; i++) {
-        const r = parseCsvLine(lines[i]);
-        const id = r[cId];
-        if (!id) continue;
-        const ownerCode = cOwner >= 0 ? r[cOwner] : undefined;
-        out.set(id, {
-          launchDate: cLaunch >= 0 && r[cLaunch] ? r[cLaunch] : undefined,
-          owner: ownerCode ? OWNER_NAMES[ownerCode] ?? ownerCode : undefined,
+    const out = new Map<string, SatCatEntry>();
+    for (const k of keys) {
+      for (const r of this.groups.get(k)?.records ?? []) {
+        const prev = out.get(r.noradId);
+        const kind = OBJECT_KIND[r.objectType ?? ""] ?? GROUP_KIND[k];
+        out.set(r.noradId, {
+          noradId: r.noradId,
+          // A satellite in "visual" and "weather" is a weather satellite.
+          category: prev && prev.category !== "Satellite" ? prev.category : kind ?? "Satellite",
+          launchDate: r.launchDate,
+          owner: r.owner,
         });
       }
-      return out;
-    } catch (e) {
-      console.error("[satcat] bulk SATCAT download failed:", e instanceof Error ? e.message : e);
-      return null;
     }
+    return [...out.values()];
   }
 
-  private async refresh(): Promise<void> {
-    const [categories, launchInfo] = await Promise.all([
-      this.fetchCategories(),
-      this.fetchLaunchInfo(),
-    ]);
-    if (!categories && !launchInfo) {
-      this.failedAt = Date.now();
-      this.failures++;
-      console.error(
-        `[satcat] refresh failed entirely (using cache, retry in ${formatRetry(celestrakRetryMs(this.failures))})`,
-      );
+  private refresh(key: string): Promise<void> {
+    let p = this.inflight.get(key);
+    if (!p) {
+      p = this.fetchGroup(key).finally(() => this.inflight.delete(key));
+      this.inflight.set(key, p);
+    }
+    return p;
+  }
+
+  private async fetchGroup(key: string): Promise<void> {
+    const text = await this.celestrak.fetchText(groupUrl(key));
+    if (text == null) return; // skipped or failed; the gate logged why
+    const records = parseCsv(text).flatMap((row): SatCatRecord[] => {
+      const id = row.NORAD_CAT_ID?.trim();
+      if (!id) return [];
+      const owner = row.OWNER?.trim();
+      return [{
+        noradId: id,
+        objectType: row.OBJECT_TYPE?.trim() || undefined,
+        launchDate: row.LAUNCH_DATE?.trim() || undefined,
+        owner: owner ? OWNER_NAMES[owner] ?? owner : undefined,
+      }];
+    });
+    if (!records.length) {
+      console.error(`[satcat] ${key}: no records in the answer (using cache)`);
       return;
     }
-    this.failures = 0;
-
-    const merged = new Map<string, SatCatEntry>();
-    const ids = new Set<string>([
-      ...(categories?.keys() ?? []),
-      ...(launchInfo?.keys() ?? []),
-    ]);
-    for (const id of ids) {
-      const prev = this.entries.get(id);
-      merged.set(id, {
-        noradId: id,
-        category: categories?.get(id) ?? prev?.category ?? "Satellite",
-        launchDate: launchInfo?.get(id)?.launchDate ?? prev?.launchDate,
-        owner: launchInfo?.get(id)?.owner ?? prev?.owner,
-      });
-    }
-
-    this.entries = merged;
-    this.fetchedAt = Date.now();
-    const entries = [...merged.values()];
+    this.groups.set(key, { at: Date.now(), records });
     await mkdir(dirname(this.cachePath), { recursive: true });
-    await writeFile(this.cachePath, JSON.stringify({ at: this.fetchedAt, entries }), "utf8");
-    console.log(`[satcat] refreshed ${entries.length} satellites (categories + launch info)`);
+    await writeFile(this.cachePath, JSON.stringify({ groups: Object.fromEntries(this.groups) }), "utf8");
+    console.log(`[satcat] refreshed ${key}: ${records.length} satellites`);
   }
 }

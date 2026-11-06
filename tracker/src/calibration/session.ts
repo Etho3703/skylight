@@ -153,7 +153,7 @@ export function visibleBodies(
     satellites: false,
     planets: false,
     magLimit: VISIBLE_MAG_LIMIT,
-    tles: [],
+    orbits: [],
   });
   const out: { name: string; azDeg: number; elDeg: number; mag?: number }[] = [];
   if (sky.sun && sky.sun.alt > minElDeg) {

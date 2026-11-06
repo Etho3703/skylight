@@ -48,7 +48,7 @@ describe("mount model", () => {
     // True az/el from the astronomy engine, through the inverse and forward
     // mount model with a non-trivial calibration — must come back identical.
     const sky = computeSky(new Date("2026-06-05T20:00:00Z"), 37.6213, -122.379, {
-      sun: true, moon: false, stars: false, satellites: false, magLimit: 0, tles: [],
+      sun: true, moon: false, stars: false, satellites: false, magLimit: 0, orbits: [],
     });
     expect(sky.sun).toBeDefined();
     const { az, alt } = sky.sun!;

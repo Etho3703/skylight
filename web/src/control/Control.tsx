@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Airport, Config, ShowFields, LocationProfile } from "@shared/index.js";
 import { convertAltitude, convertAltitudeToFt, convertDistance, convertDistanceToMi, round, MAX_RADIUS_MI, SATELLITE_GROUPS } from "@shared/index.js";
-import type { PlanetariumAuto } from "@shared/index.js";
+import type { CelestrakStatus, PlanetariumAuto } from "@shared/index.js";
 import { formatLatLon } from "@shared/format.js";
 import { CONSTELLATIONS } from "@shared/stars.js";
 import { geoAvailability, geoErrorMessage } from "../lib/geolocation.js";
 import { useStream } from "../lib/useStream.js";
-import { nextISSPass, type Tle } from "../display/celestial.js";
+import { nextISSPass, type GpElements } from "../display/celestial.js";
 import { nextSkyEvent } from "../display/skyEvents.js";
 import { labelLines } from "../display/renderer.js";
 import { ColorRow, Row, Section, Segmented, Slider, TextInput, Toggle } from "./components.js";
@@ -15,6 +15,11 @@ function skyTimeLabel(offsetMin: number): string {
   if (offsetMin === 0) return "live";
   const d = new Date(Date.now() + offsetMin * 60000);
   return d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+/** "Thu 9:12 PM": a moment from the last day or two. */
+function fmtWhen(ms: number): string {
+  return new Date(ms).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
 
 function fmtIn(ms: number): string {
@@ -58,21 +63,40 @@ export function Control() {
   const [apErr, setApErr] = useState<string | null>(null);
 
   // ISS pass finder (for the Sky section).
-  const [tles, setTles] = useState<Tle[]>([]);
+  const [orbits, setOrbits] = useState<GpElements[]>([]);
   useEffect(() => {
     let on = true;
     fetch("/api/tle")
       .then((r) => (r.ok ? r.json() : []))
-      .then((t) => on && setTles(t as Tle[]))
+      .then((t) => on && setOrbits(t as GpElements[]))
       .catch(() => {});
     return () => {
       on = false;
     };
   }, []);
   const nextPass = useMemo(
-    () => (tles.length && cfg ? nextISSPass(Date.now(), cfg.centerLat, cfg.centerLon, tles) : null),
-    [tles, cfg?.centerLat, cfg?.centerLon],
+    () => (orbits.length && cfg ? nextISSPass(Date.now(), cfg.centerLat, cfg.centerLon, orbits) : null),
+    [orbits, cfg?.centerLat, cfg?.centerLon],
   );
+
+  // CelesTrak downloads stop on any error until a person resumes them here.
+  const [celestrak, setCelestrak] = useState<CelestrakStatus>({});
+  useEffect(() => {
+    let on = true;
+    fetch("/api/celestrak")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((s) => on && setCelestrak(s as CelestrakStatus))
+      .catch(() => {});
+    return () => {
+      on = false;
+    };
+  }, []);
+  const resumeCelestrak = () => {
+    fetch("/api/celestrak/resume", { method: "POST" })
+      .then((r) => (r.ok ? r.json() : celestrak))
+      .then((s) => setCelestrak(s as CelestrakStatus))
+      .catch(() => {});
+  };
 
   // Soonest "look up" sky event (moon phase, eclipse, meteor shower, …) for the nudge chip.
   const skyEvent = useMemo(
@@ -665,6 +689,18 @@ export function Control() {
                 </Row>
               ))}
             </>
+          )}
+          {celestrak.halt && (
+            <>
+              <Row label="Satellite downloads stopped"
+                hint={`${celestrak.halt.status ? `CelesTrak answered HTTP ${celestrak.halt.status}` : "Stopped"} at ${fmtWhen(celestrak.halt.at)}. Fix the cause, then resume.`}>
+                <button className="chip" onClick={resumeCelestrak}>Resume</button>
+              </Row>
+              <Row label="" hint={celestrak.halt.message || celestrak.halt.url}><span /></Row>
+            </>
+          )}
+          {!celestrak.halt && celestrak.retryAt != null && celestrak.retryAt > Date.now() && (
+            <Row label="" hint={`CelesTrak unreachable; next try ${fmtWhen(celestrak.retryAt)}`}><span /></Row>
           )}
           <Row label="Planets" hint="Venus, Jupiter, Mars…">
             <Toggle value={cfg.showPlanets} onChange={(v) => set({ showPlanets: v })} />

@@ -1,69 +1,70 @@
-// Fetches satellite TLEs (Two-Line Elements) from Celestrak for each group the
-// control panel selected, caches them in memory + on disk (so the appliance
-// still has a sky if it boots offline), and refreshes daily. The client
-// computes positions from these with satellite.js.
+// Fetches satellite orbits (CelesTrak's GP data) for each group the control
+// panel selected and caches them in memory + on disk, so the appliance still
+// has a sky if it boots offline. Downloads happen only while a display is
+// asking for orbits, at most once a day per group, and all go through the
+// CelesTrak gate. The client computes positions from these with satellite.js.
+//
+// Asks for CSV, not TLE: TLEs can't hold the 6-digit catalog numbers given to
+// everything launched since July 2026, and the CSV is smaller anyway.
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { isSatelliteGroup } from "@shared/index.js";
-import { API_USER_AGENT } from "./datasource.js";
+import { gpFromCsvRow, isSatelliteGroup, tleToGp, type GpElements } from "@shared/index.js";
+import { parseCsv, type CelesTrak } from "./celestrak.js";
 
-export interface Tle {
+const groupUrl = (group: string) =>
+  `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=CSV`;
+
+interface GroupCache {
+  at: number;
+  sats: GpElements[];
+}
+
+/** How orbits were cached before the switch from TLE. */
+interface LegacyTle {
   name: string;
   line1: string;
   line2: string;
 }
 
-const groupUrl = (group: string) =>
-  `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(group)}&FORMAT=tle`;
-
-/** CelesTrak asks clients not to re-download a group more than every 2 h. */
-const MIN_REFETCH_MS = 2 * 3600_000;
-
-/** How long to wait before asking CelesTrak again after `failures` failed
- *  fetches in a row: 30 min, doubling to a 6 h ceiling. Retrying on every
- *  request is what keeps a blocked IP blocked. */
-export function celestrakRetryMs(failures: number): number {
-  return Math.min(30 * 60_000 * 2 ** Math.max(0, failures - 1), 6 * 3600_000);
-}
-
-/** "30 min" / "2 h", for the log line. */
-export function formatRetry(ms: number): string {
-  return ms < 3600_000 ? `${Math.round(ms / 60_000)} min` : `${ms / 3600_000} h`;
-}
-
-const noradId = (t: Tle) => t.line1.slice(2, 7).trim();
-
-interface GroupCache {
-  at: number;
-  tles: Tle[];
-}
-
-function parseTle(text: string): Tle[] {
+function parseTle(text: string): GpElements[] {
   const lines = text.split(/\r?\n/).map((l) => l.trimEnd()).filter((l) => l.length);
-  const out: Tle[] = [];
+  const out: GpElements[] = [];
   for (let i = 0; i < lines.length - 1; i++) {
     if (lines[i].startsWith("1 ") && lines[i + 1]?.startsWith("2 ")) {
       const name = (lines[i - 1] ?? "SAT").replace(/^0 /, "").trim();
-      out.push({ name, line1: lines[i], line2: lines[i + 1] });
+      const gp = tleToGp(name, lines[i], lines[i + 1]);
+      if (gp) out.push(gp);
       i++;
     }
   }
   return out;
 }
 
+/** CelesTrak's CSV, or TLE text from a custom TLE_URL source. */
+export function parseGp(text: string): GpElements[] {
+  if (!text.trimStart().startsWith("OBJECT_NAME")) return parseTle(text);
+  return parseCsv(text).flatMap((row) => gpFromCsvRow(row) ?? []);
+}
+
+const fromCache = (c: { at?: number; sats?: GpElements[]; tles?: LegacyTle[] }): GroupCache => ({
+  at: c.at ?? 0,
+  sats: c.sats ?? (c.tles ?? []).flatMap((t) => tleToGp(t.name, t.line1, t.line2) ?? []),
+});
+
 export class TleStore {
   private groups = new Map<string, GroupCache>();
+  /** CelesTrak updates every 2 h; a day is plenty for a picture of the sky. */
   private ttlMs = 24 * 3600_000;
   private inflight = new Map<string, Promise<void>>();
-  /** Consecutive failures per group, for the retry back-off. */
-  private failures = new Map<string, { at: number; count: number }>();
 
-  /** `getGroups` returns the CelesTrak groups to serve.
-   *  TLE_URL, if set, replaces them all with one custom source. */
+  /** `getGroups` returns the CelesTrak groups to serve (none while satellites
+   *  are hidden). TLE_URL, if set, replaces them all with one custom source,
+   *  which goes through the same gate: its rules suit any free source. */
   constructor(
     private cachePath: string,
     private getGroups: () => string[],
+    private celestrak: CelesTrak,
     private customUrl = process.env.TLE_URL,
   ) {}
 
@@ -71,42 +72,38 @@ export class TleStore {
     try {
       const raw = await readFile(this.cachePath, "utf8");
       const parsed = JSON.parse(raw) as {
-        groups?: Record<string, GroupCache>;
+        groups?: Record<string, { at?: number; sats?: GpElements[]; tles?: LegacyTle[] }>;
         at?: number;
-        tles?: Tle[];
+        tles?: LegacyTle[];
       };
       if (parsed.groups) {
-        for (const [g, c] of Object.entries(parsed.groups)) this.groups.set(g, c);
+        for (const [g, c] of Object.entries(parsed.groups)) this.groups.set(g, fromCache(c));
       } else if (parsed.tles) {
         // Cache from before groups were selectable: it was the visual group.
-        this.groups.set("visual", { at: parsed.at ?? 0, tles: parsed.tles });
+        this.groups.set("visual", fromCache(parsed));
       }
     } catch {
       /* first run */
     }
-    // Refresh on startup (non-blocking) and then on a timer.
-    void this.refreshAll();
-    setInterval(() => void this.refreshAll(), 6 * 3600_000).unref?.();
   }
 
-  /** TLEs for the selected groups, merged and de-duplicated by NORAD id.
+  /** Orbits for the selected groups, merged and de-duplicated by NORAD id.
    *  Stale groups answer from cache and refresh behind the response, so a
    *  slow or unreachable CelesTrak can't stall the page; only a group with
    *  nothing cached yet (newly selected) is fetched before answering. */
-  async get(): Promise<Tle[]> {
+  async get(): Promise<GpElements[]> {
     const keys = this.keys();
     const stale = keys.filter((k) => Date.now() - (this.groups.get(k)?.at ?? 0) > this.ttlMs);
-    const empty = stale.filter((k) => !this.groups.get(k)?.tles.length);
+    const empty = stale.filter((k) => !this.groups.get(k)?.sats.length);
     for (const k of stale) if (!empty.includes(k)) void this.refresh(k);
     await Promise.all(empty.map((k) => this.refresh(k)));
-    const seen = new Set<string>();
-    const out: Tle[] = [];
+    const seen = new Set<number>();
+    const out: GpElements[] = [];
     for (const k of keys) {
-      for (const t of this.groups.get(k)?.tles ?? []) {
-        const id = noradId(t);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        out.push(t);
+      for (const s of this.groups.get(k)?.sats ?? []) {
+        if (seen.has(s.NORAD_CAT_ID)) continue;
+        seen.add(s.NORAD_CAT_ID);
+        out.push(s);
       }
     }
     return out;
@@ -115,10 +112,6 @@ export class TleStore {
   private keys(): string[] {
     // Filtered again here: a hand-edited config.json skips the write validation.
     return this.customUrl ? ["custom"] : this.getGroups().filter(isSatelliteGroup);
-  }
-
-  private async refreshAll(): Promise<void> {
-    await Promise.all(this.keys().map((k) => this.refresh(k)));
   }
 
   private refresh(key: string): Promise<void> {
@@ -131,31 +124,17 @@ export class TleStore {
   }
 
   private async fetchGroup(key: string): Promise<void> {
-    const cached = this.groups.get(key);
-    if (cached && cached.tles.length && Date.now() - cached.at < MIN_REFETCH_MS) return;
-    const failed = this.failures.get(key);
-    if (failed && Date.now() - failed.at < celestrakRetryMs(failed.count)) return;
     const url = key === "custom" && this.customUrl ? this.customUrl : groupUrl(key);
-    try {
-      const res = await fetch(url, {
-        headers: { "User-Agent": API_USER_AGENT },
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const tles = parseTle(await res.text());
-      if (!tles.length) throw new Error("no TLEs in response");
-      this.groups.set(key, { at: Date.now(), tles });
-      this.failures.delete(key);
-      await this.save();
-      console.log(`[tle] refreshed ${key}: ${tles.length} satellites`);
-    } catch (err) {
-      const count = (failed?.count ?? 0) + 1;
-      this.failures.set(key, { at: Date.now(), count });
-      console.error(
-        `[tle] ${key} refresh failed (using cache, retry in ${formatRetry(celestrakRetryMs(count))}):`,
-        err instanceof Error ? err.message : err,
-      );
+    const text = await this.celestrak.fetchText(url);
+    if (text == null) return; // skipped or failed; the gate logged why
+    const sats = parseGp(text);
+    if (!sats.length) {
+      console.error(`[tle] ${key}: no satellites in the answer (using cache)`);
+      return;
     }
+    this.groups.set(key, { at: Date.now(), sats });
+    await this.save();
+    console.log(`[tle] refreshed ${key}: ${sats.length} satellites`);
   }
 
   private async save(): Promise<void> {

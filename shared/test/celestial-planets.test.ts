@@ -12,7 +12,7 @@ const OPTS = {
   stars: false,
   satellites: false,
   magLimit: 3,
-  tles: [],
+  orbits: [],
 };
 
 describe("computeSky planets", () => {

@@ -1,6 +1,7 @@
 export * from "./airport.js";
 export * from "./config.js";
 export * from "./satGroups.js";
+export * from "./gp.js";
 export * from "./constants.js";
 export * from "./format.js";
 export * from "./aircraft.js";

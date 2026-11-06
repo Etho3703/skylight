@@ -50,7 +50,7 @@ import {
   type SkyAngles,
 } from "@shared/index.js";
 import { classifyGlyph, drawAircraftGlyph, GLYPH_SCALE } from "./aircraftGlyph.js";
-import { computeSky, type Sky, type Tle, type SkyBody } from "./celestial.js";
+import { computeSky, type Sky, type GpElements, type SkyBody } from "./celestial.js";
 import { visibleAsterisms } from "./stars.js";
 import tzLookup from "tz-lookup";
 
@@ -85,6 +85,11 @@ function starAlpha(mag: number): number {
 /** Sky-name font: 10 px at scale 1, sized by the control panel. */
 function skyLabelFont(cfg: Config): string {
   return `300 ${(10 * cfg.skyLabelScale).toFixed(1)}px ${cfg.fonts.label}`;
+}
+
+/** What /api/tle answers for: nothing while satellites are hidden. */
+function orbitsKey(cfg: Config): string {
+  return cfg.showSatellites ? cfg.satelliteGroups.join(",") : "";
 }
 
 /** Meters per display distance unit, for the range rings. */
@@ -245,12 +250,12 @@ export class Renderer {
   private frameT = 0;
 
   // Sky layer state.
-  private tles: Tle[] = [];
+  private orbits: GpElements[] = [];
   private sky: Sky = { stars: [], sats: [], planets: [], figures: [] };
   private skyComputedAt = 0;
   private skyOffsetUsed = NaN;
-  /** satelliteGroups the current TLEs were fetched for. */
-  private tleGroupsKey = "";
+  /** Satellites shown + groups the current orbits were fetched for. */
+  private orbitsKey = "";
   /** Last time any aircraft was on screen (rAF clock), for planetariumAuto "quiet". */
   private lastTrafficAt = 0;
 
@@ -278,8 +283,8 @@ export class Renderer {
   }
 
   start(): void {
-    void this.fetchTles();
-    setInterval(() => void this.fetchTles(), 3600_000);
+    void this.fetchOrbits();
+    setInterval(() => void this.fetchOrbits(), 3600_000);
     const loop = (now: number) => {
       this.raf = requestAnimationFrame(loop);
       // Cap to maxFps via an accumulator: advance a running "due" time by whole
@@ -354,11 +359,11 @@ export class Renderer {
     return next;
   }
 
-  private async fetchTles(): Promise<void> {
-    this.tleGroupsKey = this.getConfig().satelliteGroups.join(",");
+  private async fetchOrbits(): Promise<void> {
+    this.orbitsKey = orbitsKey(this.getConfig());
     try {
       const res = await fetch("/api/tle");
-      if (res.ok) this.tles = (await res.json()) as Tle[];
+      if (res.ok) this.orbits = (await res.json()) as GpElements[];
     } catch {
       /* keep whatever we had */
     }
@@ -833,9 +838,10 @@ export class Renderer {
       this.sky = { stars: [], sats: [], planets: [], figures: [] };
       return;
     }
-    // New satellite groups picked in the control panel: the server fetches
-    // them on demand, so ask straight away rather than on the hourly timer.
-    if (cfg.satelliteGroups.join(",") !== this.tleGroupsKey) void this.fetchTles();
+    // Satellites switched on or new groups picked in the control panel: the
+    // server only fetches orbits while satellites are shown, so ask straight
+    // away rather than on the hourly timer.
+    if (orbitsKey(cfg) !== this.orbitsKey) void this.fetchOrbits();
     if (now - this.skyComputedAt < 300 && this.skyOffsetUsed === cfg.skyTimeOffsetMin) return;
     this.skyComputedAt = now;
     this.skyOffsetUsed = cfg.skyTimeOffsetMin;
@@ -849,7 +855,7 @@ export class Renderer {
       magLimit: this.planetariumOn(cfg, now)
         ? Math.max(cfg.starMagLimit, cfg.planetariumStarMagLimit)
         : cfg.starMagLimit,
-      tles: this.tles,
+      orbits: this.orbits,
       figures: cfg.showStars && (cfg.showConstellationLines || cfg.showConstellationNames),
       sunlitOnly: cfg.satellitesSunlitOnly,
     });
